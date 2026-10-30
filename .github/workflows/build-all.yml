@@ -73,7 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 配置 CMake (Universal 2: x86_64 + arm64)
+      - name: "配置 CMake (Universal 2: x86_64 + arm64)"
         run: cmake -B build -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_BUILD_TYPE=Release
 
       - name: 构建 Universal 二进制
