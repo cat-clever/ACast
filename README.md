@@ -1,5 +1,9 @@
 # 跨平台多协议投屏与反向控制系统 (ACast)
 
+<p align="center">
+  <img src="app-desktop/resources/master_icon.png" width="120" height="120" alt="ACast Icon" />
+</p>
+
 一套集成了 **“B站/DLNA 免装客户端大屏投屏”** 与 **“Windows/macOS 桌面端 USB/Wi-Fi 极低延迟反向操控（全架构原生支持）”** 的开源投屏系统。
 
 [![Release](https://img.shields.io/github/v/release/cat-clever/ACast)](https://github.com/cat-clever/ACast/releases)
