@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.15)
-project(ACast VERSION 0.1.0 LANGUAGES CXX)
+project(ACast VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
 
 # macOS Universal 2 架构支持
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)

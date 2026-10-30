@@ -93,21 +93,25 @@ void DlnaController::StartDiscovery(DeviceFoundCallback on_found) {
                 buffer[n] = '\0';
                 std::string resp(buffer);
                 std::smatch match;
-                // 提取 LOCATION 标头
-                std::regex loc_regex("(?i)LOCATION:\\s*([^\\r\\n]+)");
-                if (std::regex_search(resp, match, loc_regex)) {
-                    std::string location = match[1].str();
-                    DlnaDevice dev;
-                    dev.location_url = location;
-                    char ip_buf[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &src.sin_addr, ip_buf, sizeof(ip_buf));
-                    dev.ip_address = ip_buf;
+                // 提取 LOCATION 标头 (使用标准 icase 模式，严禁内嵌 (?i) 语法导致 libc++ 崩溃)
+                try {
+                    std::regex loc_regex("LOCATION:\\s*([^\\r\\n]+)", std::regex_constants::icase);
+                    if (std::regex_search(resp, match, loc_regex)) {
+                        std::string location = match[1].str();
+                        DlnaDevice dev;
+                        dev.location_url = location;
+                        char ip_buf[INET_ADDRSTRLEN];
+                        inet_ntop(AF_INET, &src.sin_addr, ip_buf, sizeof(ip_buf));
+                        dev.ip_address = ip_buf;
 
-                    if (ParseLocationXml(location, dev)) {
-                        if (on_found) {
-                            on_found(dev);
+                        if (ParseLocationXml(location, dev)) {
+                            if (on_found) {
+                                on_found(dev);
+                            }
                         }
                     }
+                } catch (const std::exception& ex) {
+                    // 正则或解析守护，防止崩溃
                 }
             }
         }
@@ -123,69 +127,73 @@ void DlnaController::StopDiscovery() {
 }
 
 bool DlnaController::ParseLocationXml(const std::string& location_url, DlnaDevice& out_device) {
-    // 简易 URL 拆解: http://host:port/path
-    std::regex url_regex("http://([^:/]+):?(\\d+)?(/.*)?");
-    std::smatch m;
-    if (!std::regex_match(location_url, m, url_regex)) {
-        return false;
-    }
+    try {
+        // 简易 URL 拆解: http://host:port/path
+        std::regex url_regex("http://([^:/]+):?(\\d+)?(/.*)?");
+        std::smatch m;
+        if (!std::regex_match(location_url, m, url_regex)) {
+            return false;
+        }
 
-    std::string host = m[1].str();
-    int port = m[2].matched ? std::stoi(m[2].str()) : 80;
-    std::string path = m[3].matched ? m[3].str() : "/";
+        std::string host = m[1].str();
+        int port = m[2].matched ? std::stoi(m[2].str()) : 80;
+        std::string path = m[3].matched ? m[3].str() : "/";
 
-    socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (!IS_VALID_SOCKET(sock)) return false;
+        socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (!IS_VALID_SOCKET(sock)) return false;
 
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+        struct sockaddr_in addr;
+        std::memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
 
-    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+            CLOSE_SOCKET(sock);
+            return false;
+        }
+
+        std::ostringstream req;
+        req << "GET " << path << " HTTP/1.1\r\n"
+            << "Host: " << host << ":" << port << "\r\n"
+            << "Connection: close\r\n\r\n";
+
+        std::string req_str = req.str();
+        send(sock, req_str.c_str(), (int)req_str.length(), 0);
+
+        std::string response;
+        char buf[1024];
+        int bytes;
+        while ((bytes = recv(sock, buf, sizeof(buf) - 1, 0)) > 0) {
+            buf[bytes] = '\0';
+            response.append(buf, bytes);
+        }
         CLOSE_SOCKET(sock);
+
+        // 解析 friendlyName
+        std::smatch name_match;
+        std::regex name_regex("<friendlyName>([^<]+)</friendlyName>");
+        if (std::regex_search(response, name_match, name_regex)) {
+            out_device.friendly_name = name_match[1].str();
+        } else {
+            out_device.friendly_name = "智能电视 (" + host + ")";
+        }
+
+        // 解析 controlURL
+        std::smatch ctrl_match;
+        std::regex ctrl_regex("<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>\\s*<serviceId>[^<]+</serviceId>\\s*<controlURL>([^<]+)</controlURL>");
+        if (std::regex_search(response, ctrl_match, ctrl_regex)) {
+            std::string rel_ctrl = ctrl_match[1].str();
+            if (rel_ctrl.front() != '/') rel_ctrl = "/" + rel_ctrl;
+            out_device.control_url = "http://" + host + ":" + std::to_string(port) + rel_ctrl;
+        } else {
+            out_device.control_url = "http://" + host + ":" + std::to_string(port) + "/AVTransport/control";
+        }
+
+        return true;
+    } catch (...) {
         return false;
     }
-
-    std::ostringstream req;
-    req << "GET " << path << " HTTP/1.1\r\n"
-        << "Host: " << host << ":" << port << "\r\n"
-        << "Connection: close\r\n\r\n";
-
-    std::string req_str = req.str();
-    send(sock, req_str.c_str(), (int)req_str.length(), 0);
-
-    std::string response;
-    char buf[1024];
-    int bytes;
-    while ((bytes = recv(sock, buf, sizeof(buf) - 1, 0)) > 0) {
-        buf[bytes] = '\0';
-        response.append(buf, bytes);
-    }
-    CLOSE_SOCKET(sock);
-
-    // 解析 friendlyName
-    std::smatch name_match;
-    std::regex name_regex("<friendlyName>([^<]+)</friendlyName>");
-    if (std::regex_search(response, name_match, name_regex)) {
-        out_device.friendly_name = name_match[1].str();
-    } else {
-        out_device.friendly_name = "智能电视 (" + host + ")";
-    }
-
-    // 解析 controlURL
-    std::smatch ctrl_match;
-    std::regex ctrl_regex("<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>\\s*<serviceId>[^<]+</serviceId>\\s*<controlURL>([^<]+)</controlURL>");
-    if (std::regex_search(response, ctrl_match, ctrl_regex)) {
-        std::string rel_ctrl = ctrl_match[1].str();
-        if (rel_ctrl.front() != '/') rel_ctrl = "/" + rel_ctrl;
-        out_device.control_url = "http://" + host + ":" + std::to_string(port) + rel_ctrl;
-    } else {
-        out_device.control_url = "http://" + host + ":" + std::to_string(port) + "/AVTransport/control";
-    }
-
-    return true;
 }
 
 std::string DlnaController::BuildSoapRequest(const std::string& action, const std::string& service_type, const std::string& arguments) {

@@ -11,6 +11,7 @@
 
 ## 核心架构与多芯片支持
 - 💻 **桌面端多架构原生支持（Windows & macOS 控制端）**：
+  - **纯原生 GUI 图形视窗**：彻底抛弃终端黑框，macOS 采用 Cocoa AppKit GPU 硬件加速视窗，Windows 采用 Win32 API 原生视窗，毫秒级秒开。
   - **Windows x86_64**：传统 Intel / AMD 64位电脑。
   - **Windows ARM64**：高通骁龙 X Elite 笔记本、Surface Pro ARM 系列、Win11 on ARM，免指令模拟原生最高性能。
   - **macOS Universal 2**：一份包原生支持 Apple Silicon（M1/M2/M3/M4）与 Intel 架构 Mac。

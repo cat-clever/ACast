@@ -1,6 +1,18 @@
 # ACast 发版说明
 
-## v0.1.9 更新日志 (最新)
+## v0.2.0 更新日志 (最新)
+
+1. **桌面控制端全面升级为纯原生图形界面 (GUI)**：
+   * **macOS 原生 Cocoa (AppKit) 视窗**：采用纯 Objective-C++ 与 Cocoa AppKit 编写，GPU 硬件加速渲染，彻底移除终端与 AppleScript 弹窗，双击即开，沉浸式深色/浅色自适应风格；
+   * **Windows 原生 Win32 视窗**：采用 Win32 API 与 Common Controls v6 现代视觉样式，配置 `/SUBSYSTEM:WINDOWS`，无黑框控制台，毫秒级冷启；
+   * **全功能控制视窗**：集成版本状态展示与一键在线热更新、USB 手机反控卡片（状态识别、返回键/桌面键控制）、局域网大屏设备发现与管理列表、内置沉浸式运行日志控制台。
+2. **彻底解决 macOS 启动 SIGABRT 崩溃 (`std::__throw_regex_error<11>`)**：
+   * 修复 `core/src/dlna_controller.cpp` 中非标准 `(?i)` 正则内嵌标志引起的 `libc++` 异常崩溃，规范为 `std::regex_constants::icase`；
+   * 为 SSDP 组播发现与 XML 端点解析添加全局异常捕获保护网，彻底杜绝闪退。
+
+---
+
+## v0.1.9 更新日志
 
 1. **彻底解决 AirPlay 协议大屏无法投屏及 404 (playlist not found) 问题**：
    * 修复协议分流错误：解决此前误将 DLNA SOAP XML 发送至 AirPlay 7001 端口导致 404 的致命缺陷；

@@ -111,9 +111,9 @@ jobs:
               <key>CFBundleDisplayName</key>
               <string>ACast</string>
               <key>CFBundleVersion</key>
-              <string>0.1.9</string>
+              <string>0.2.0</string>
               <key>CFBundleShortVersionString</key>
-              <string>0.1.9</string>
+              <string>0.2.0</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleSignature</key>
@@ -124,8 +124,6 @@ jobs:
               <string>11.0</string>
               <key>NSHighResolutionCapable</key>
               <true/>
-              <key>NSAppleEventsUsageDescription</key>
-              <string>ACast 需要调用系统终端以展示投屏与反向控制控制台界面</string>
           </dict>
           </plist>
           EOF
