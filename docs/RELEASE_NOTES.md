@@ -1,6 +1,15 @@
 # ACast 发版说明
 
-## v0.2.6 更新日志 (最新)
+## v0.2.7 更新日志 (最新)
+
+1. **Android 发射端全面升级为 HLS 实时流协议架构**：
+   * **彻底根治大屏接收端拉流失败 (Operation Stopped)**：针对 macOS ADisplay（Apple AVPlayer 引擎）等大屏设备无法直接播放裸 HTTP MPEG-TS 长连接流的问题，全面升级为符合 RFC 8216 标准的 Live HLS（`live.m3u8`）架构；
+   * **内存短分片切片引擎**：自研轻量内存滑动窗口切片器，每秒切出独立 TS 分片（带完整 PAT/PMT/SPS/PPS 关键帧），无 `#EXT-X-ENDLIST` 标签，实现毫秒级起播与超低延迟播放；
+   * **协议智能兼容**：保留 `/live.ts` 长连接接口向下兼容老旧硬件，DLNA DIDL-Lite 动态自适应 MIME 标头。
+
+---
+
+## v0.2.6 更新日志
 
 1. **桌面控制端全面内置 Google 官方 ADB 调试桥工具**：
    * **出厂直接内置**：macOS Universal DMG 产物直接内置 Apple Silicon + Intel 官方 `adb` 工具（置于 `ACast.app/Contents/MacOS/adb`）；Windows 发行 ZIP 包中直接内置官方 `adb.exe`、`AdbWinApi.dll` 与 `AdbWinUsbApi.dll`，用户解压/双击即开，零环境依赖；

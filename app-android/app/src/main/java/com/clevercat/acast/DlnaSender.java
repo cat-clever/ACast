@@ -312,13 +312,15 @@ public class DlnaSender {
                 } catch (Throwable ignored) {}
 
                 // 标准 UPnP / DLNA AVTransport SOAP 投送
-                // 构造标准 DIDL-Lite 元数据，携带完整 DLNA.ORG_OP=01 直播流特性声明，帮助大屏瞬间锁定解码管线
+                // 构造标准 DIDL-Lite 元数据，自动识别 HLS (m3u8) 或 MPEG-TS 格式并注入 DLNA.ORG_OP=01 直播流特性
+                boolean isHls = mediaUrl != null && mediaUrl.contains(".m3u8");
+                String mimeType = isHls ? "application/vnd.apple.mpegurl" : "video/mp2t";
                 String didlXml =
                         "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">" +
                         "<item id=\"0\" parentID=\"-1\" restricted=\"1\">" +
                         "<dc:title>ACast 实时投屏</dc:title>" +
                         "<upnp:class>object.item.videoItem</upnp:class>" +
-                        "<res protocolInfo=\"http-get:*:video/mp2t:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\">" + mediaUrl + "</res>" +
+                        "<res protocolInfo=\"http-get:*:" + mimeType + ":DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\">" + mediaUrl + "</res>" +
                         "</item>" +
                         "</DIDL-Lite>";
                 String escapedDidl = didlXml.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");

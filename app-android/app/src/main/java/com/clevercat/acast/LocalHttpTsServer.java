@@ -39,7 +39,7 @@ public class LocalHttpTsServer {
     private ServerSocket serverSocket;
     private volatile boolean isRunning = false;
 
-    // 活跃的电视客户端会话列表
+    // 活跃的长连接客户端会话列表 (兼容 /live.ts)
     private final CopyOnWriteArrayList<ClientSession> clientSessions = new CopyOnWriteArrayList<>();
 
     // 最新缓存的 SPS / PPS
@@ -47,7 +47,28 @@ public class LocalHttpTsServer {
 
     // GOP 环形缓存：保存最近一个完整关键帧及后续帧的 TS 包，电视连入时瞬间推送秒开
     private final List<byte[]> gopTsCache = Collections.synchronizedList(new ArrayList<>());
-    private static final int MAX_GOP_CACHE_PACKETS = 600; // 约 100KB 数据，足够毫秒级起播
+    private static final int MAX_GOP_CACHE_PACKETS = 600; // 约 100KB 数据
+
+    // ==================== HLS 实时流切片器状态 ====================
+    public static class HlsSegment {
+        final long sequence;
+        final double durationSec;
+        final byte[] tsData;
+
+        public HlsSegment(long sequence, double durationSec, byte[] tsData) {
+            this.sequence = sequence;
+            this.durationSec = durationSec;
+            this.tsData = tsData;
+        }
+    }
+
+    private final Object hlsLock = new Object();
+    private final List<HlsSegment> hlsSegments = new ArrayList<>();
+    private static final int MAX_HLS_SEGMENTS = 4;
+    private long segmentSequenceCounter = 1;
+    private final ByteArrayOutputStream currentSegmentBuffer = new ByteArrayOutputStream(256 * 1024);
+    private long currentSegmentStartPtsUs = -1;
+    private long currentSegmentLastPtsUs = -1;
 
     private static class ClientSession {
         final Socket socket;
@@ -75,13 +96,12 @@ public class LocalHttpTsServer {
             try {
                 serverSocket = new ServerSocket(port);
                 serverSocket.setReuseAddress(true);
-                Log.i(TAG, "本地 MPEG-TS 实时流推流服务已启动，监听端口: " + port);
+                Log.i(TAG, "本地 HTTP HLS/MPEG-TS 实时推流服务已启动，监听端口: " + port);
 
                 while (isRunning) {
                     Socket client = serverSocket.accept();
                     client.setTcpNoDelay(true);
                     client.setSendBufferSize(256 * 1024);
-                    Log.i(TAG, "智能电视客户端连入拉流: " + client.getRemoteSocketAddress());
 
                     new Thread(() -> handleHttpClient(client), "TsClientHandler").start();
                 }
@@ -94,7 +114,6 @@ public class LocalHttpTsServer {
     }
 
     private void handleHttpClient(Socket client) {
-        ClientSession session = null;
         try {
             InputStream in = client.getInputStream();
             byte[] buf = new byte[2048];
@@ -105,23 +124,195 @@ public class LocalHttpTsServer {
             }
 
             String requestLine = "";
-            boolean isHead = false;
             try {
                 String reqStr = new String(buf, 0, read, "UTF-8");
                 int firstLineEnd = reqStr.indexOf("\r\n");
-                if (firstLineEnd > 0) {
-                    requestLine = reqStr.substring(0, firstLineEnd);
-                } else {
-                    requestLine = reqStr;
-                }
-                if (requestLine.startsWith("HEAD")) {
-                    isHead = true;
-                }
+                requestLine = (firstLineEnd > 0) ? reqStr.substring(0, firstLineEnd) : reqStr;
             } catch (Throwable ignored) {}
-            Log.i(TAG, "电视客户端请求拉流: " + requestLine + " (来自 " + client.getRemoteSocketAddress() + ")");
+
+            String method = "GET";
+            String path = "/";
+            String[] parts = requestLine.split(" ");
+            if (parts.length >= 2) {
+                method = parts[0].toUpperCase(java.util.Locale.US);
+                path = parts[1];
+            }
+
+            Log.i(TAG, "客户端 HTTP 请求: " + method + " " + path + " (来自 " + client.getRemoteSocketAddress() + ")");
 
             OutputStream out = client.getOutputStream();
-            // 响应标准 DLNA 实时直播流 HTTP Header (包含 streaming 扩展与特性声明)
+
+            // 处理 OPTIONS 预检请求
+            if ("OPTIONS".equals(method)) {
+                String optionsResp =
+                        "HTTP/1.1 204 No Content\r\n" +
+                        "Access-Control-Allow-Origin: *\r\n" +
+                        "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n" +
+                        "Access-Control-Allow-Headers: *\r\n" +
+                        "Content-Length: 0\r\n" +
+                        "Connection: close\r\n\r\n";
+                out.write(optionsResp.getBytes("UTF-8"));
+                out.flush();
+                try { client.close(); } catch (Throwable ignored) {}
+                return;
+            }
+
+            // HLS 播放列表请求
+            if (path.contains(".m3u8")) {
+                handleM3u8Request(client, method, out);
+                return;
+            }
+
+            // HLS 分片请求
+            if (path.contains("segment-") && path.endsWith(".ts")) {
+                handleSegmentRequest(client, method, path, out);
+                return;
+            }
+
+            // 兜底长连接流 (/live.ts)
+            handleLiveTsLongPoll(client, method, out);
+
+        } catch (Throwable t) {
+            Log.d(TAG, "处理客户端连接失败: " + t.getMessage());
+            try { client.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * 处理 live.m3u8 实时直播播放列表请求
+     */
+    private void handleM3u8Request(Socket client, String method, OutputStream out) {
+        try {
+            synchronized (hlsLock) {
+                if (hlsSegments.isEmpty() && isRunning) {
+                    ScreenCaptureService.requestKeyFrame();
+                    try {
+                        hlsLock.wait(1200);
+                    } catch (InterruptedException ignored) {}
+                }
+                // 兜底：如果等待后分片仍为空但已有当前首屏帧数据，立即切出首个分片
+                if (hlsSegments.isEmpty() && currentSegmentBuffer.size() > 0) {
+                    long durationUs = Math.max(500_000L, currentSegmentLastPtsUs - currentSegmentStartPtsUs);
+                    double durSec = Math.max(0.3, durationUs / 1_000_000.0);
+                    byte[] segData = currentSegmentBuffer.toByteArray();
+                    hlsSegments.add(new HlsSegment(segmentSequenceCounter++, durSec, segData));
+                    currentSegmentBuffer.reset();
+                    currentSegmentStartPtsUs = -1;
+                }
+            }
+
+            String playlist = generateM3u8Playlist();
+            byte[] body = playlist.getBytes("UTF-8");
+            String header =
+                    "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: application/vnd.apple.mpegurl\r\n" +
+                    "Content-Length: " + body.length + "\r\n" +
+                    "Connection: close\r\n" +
+                    "Access-Control-Allow-Origin: *\r\n" +
+                    "Cache-Control: no-cache, no-store, must-revalidate\r\n" +
+                    "Pragma: no-cache\r\n" +
+                    "Expires: 0\r\n\r\n";
+            out.write(header.getBytes("UTF-8"));
+            if (!"HEAD".equals(method)) {
+                out.write(body);
+            }
+            out.flush();
+        } catch (Throwable t) {
+            Log.w(TAG, "输出 M3U8 清单失败: " + t.getMessage());
+        } finally {
+            try { client.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * 处理 segment-xxx.ts 分片请求
+     */
+    private void handleSegmentRequest(Socket client, String method, String path, OutputStream out) {
+        try {
+            long seq = -1;
+            int segIdx = path.indexOf("segment-");
+            int dotIdx = path.indexOf(".ts", segIdx);
+            if (segIdx >= 0 && dotIdx > segIdx) {
+                String numStr = path.substring(segIdx + "segment-".length(), dotIdx);
+                seq = Long.parseLong(numStr);
+            }
+
+            byte[] segData = null;
+            synchronized (hlsLock) {
+                for (HlsSegment seg : hlsSegments) {
+                    if (seg.sequence == seq) {
+                        segData = seg.tsData;
+                        break;
+                    }
+                }
+            }
+
+            if (segData != null) {
+                String header =
+                        "HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: video/mp2t\r\n" +
+                        "Content-Length: " + segData.length + "\r\n" +
+                        "Connection: close\r\n" +
+                        "Access-Control-Allow-Origin: *\r\n" +
+                        "Cache-Control: public, max-age=86400\r\n\r\n";
+                out.write(header.getBytes("UTF-8"));
+                if (!"HEAD".equals(method)) {
+                    out.write(segData);
+                }
+                out.flush();
+            } else {
+                String header = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                out.write(header.getBytes("UTF-8"));
+                out.flush();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "输出 Segment 数据失败: " + t.getMessage());
+        } finally {
+            try { client.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * 生成符合 RFC 8216 规范的 Live 直播 M3U8 清单
+     */
+    private String generateM3u8Playlist() {
+        synchronized (hlsLock) {
+            if (hlsSegments.isEmpty()) {
+                return "#EXTM3U\n" +
+                        "#EXT-X-VERSION:3\n" +
+                        "#EXT-X-TARGETDURATION:2\n" +
+                        "#EXT-X-MEDIA-SEQUENCE:1\n";
+            }
+            long mediaSequence = hlsSegments.get(0).sequence;
+            int targetDuration = 2;
+            for (HlsSegment seg : hlsSegments) {
+                int rounded = (int) Math.ceil(seg.durationSec);
+                if (rounded > targetDuration) {
+                    targetDuration = rounded;
+                }
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("#EXTM3U\n");
+            sb.append("#EXT-X-VERSION:3\n");
+            sb.append("#EXT-X-TARGETDURATION:").append(targetDuration).append("\n");
+            sb.append("#EXT-X-MEDIA-SEQUENCE:").append(mediaSequence).append("\n");
+
+            for (HlsSegment seg : hlsSegments) {
+                sb.append(String.format(java.util.Locale.US, "#EXTINF:%.3f,\n", seg.durationSec));
+                sb.append("segment-").append(seg.sequence).append(".ts\n");
+            }
+            return sb.toString();
+        }
+    }
+
+    /**
+     * 处理兼容旧版或特定硬件的 /live.ts 长连接实时推流
+     */
+    private void handleLiveTsLongPoll(Socket client, String method, OutputStream out) {
+        ClientSession session = null;
+        try {
+            boolean isHead = "HEAD".equals(method);
             String responseHeader =
                     "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: video/mp2t\r\n" +
@@ -137,13 +328,11 @@ public class LocalHttpTsServer {
             out.write(responseHeader.getBytes("UTF-8"));
             out.flush();
 
-            // 如果是探测性 HEAD 请求，发送完合法 Headers 后直接退出，绝不发送二进制 Body
             if (isHead) {
                 Log.i(TAG, "HEAD 请求握手成功，等待电视后续拉流连接。");
                 return;
             }
 
-            // 电视正式连入拉流，立即请求硬件编码器即刻刷新全量关键帧 (IDR 帧)
             ScreenCaptureService.requestKeyFrame();
 
             session = new ClientSession(client, out);
@@ -166,13 +355,13 @@ public class LocalHttpTsServer {
                     out.write(burstData);
                     out.flush();
                     session.hasReceivedKeyFrame = true;
-                    Log.i(TAG, "已向电视瞬间爆发推送 " + burstData.length + " 字节 GOP 首屏秒开数据");
+                    Log.i(TAG, "已向长连接电视客户端瞬间爆发推送 " + burstData.length + " 字节 GOP 首屏秒开数据");
                 }
             }
 
             clientSessions.add(session);
 
-            // 3. 持续消费待发送队列，并提供 40ms 高频 PCR 心跳守护（防止屏幕静止时电视 Demux PLL 失锁报 Operation Stopped）
+            // 3. 持续消费待发送队列，并提供 40ms 高频 PCR 心跳守护
             long lastPcrTimeMs = System.currentTimeMillis();
             while (isRunning && session.active && !client.isClosed()) {
                 byte[] data = session.sendQueue.poll();
@@ -182,7 +371,7 @@ public class LocalHttpTsServer {
                     lastPcrTimeMs = System.currentTimeMillis();
                 } else {
                     long now = System.currentTimeMillis();
-                    if (now - lastPcrTimeMs >= 40) { // 超过 40ms 屏幕静止无帧，发送纯 PCR 时钟心跳包
+                    if (now - lastPcrTimeMs >= 40) {
                         byte[] pcrPacket = generatePcrPacket();
                         out.write(pcrPacket);
                         out.flush();
@@ -197,7 +386,7 @@ public class LocalHttpTsServer {
             }
 
         } catch (Throwable t) {
-            Log.d(TAG, "电视客户端连接断开: " + t.getMessage());
+            Log.d(TAG, "长连接客户端连接断开: " + t.getMessage());
         } finally {
             if (session != null) {
                 clientSessions.remove(session);
@@ -276,9 +465,7 @@ public class LocalHttpTsServer {
             }
         }
 
-        if (clientSessions.isEmpty()) return;
-
-        // 合成单帧批量字节流提高 socket 发送效率
+        // 合成单帧批量字节流提高效率
         int totalSize = tsPackets.size() * 188 + (pat != null ? 188 : 0) + (pmt != null ? 188 : 0);
         ByteArrayOutputStream frameStream = new ByteArrayOutputStream(totalSize);
         if (pat != null) frameStream.write(pat, 0, 188);
@@ -288,24 +475,62 @@ public class LocalHttpTsServer {
         }
         byte[] frameBytes = frameStream.toByteArray();
 
-        // 分发给各个电视会话
-        for (ClientSession session : clientSessions) {
-            if (!session.active) continue;
+        // 1. 送入 HLS 内存切片器生成切片
+        appendHlsFrame(frameBytes, isKeyFrame, ptsUs);
 
-            // 首次接入需从关键帧开始投送
-            if (!session.hasReceivedKeyFrame) {
-                if (isKeyFrame) {
-                    session.hasReceivedKeyFrame = true;
-                } else {
-                    continue; // 丢弃该 P 帧，直到遇到关键帧
+        // 2. 分发给各个长连接电视会话 (/live.ts)
+        if (!clientSessions.isEmpty()) {
+            for (ClientSession session : clientSessions) {
+                if (!session.active) continue;
+
+                // 首次接入需从关键帧开始投送
+                if (!session.hasReceivedKeyFrame) {
+                    if (isKeyFrame) {
+                        session.hasReceivedKeyFrame = true;
+                    } else {
+                        continue;
+                    }
+                }
+
+                // 限制队列长度防止慢客户端导致内存溢出
+                if (session.sendQueue.size() > 50) {
+                    session.sendQueue.poll();
+                }
+                session.sendQueue.offer(frameBytes);
+            }
+        }
+    }
+
+    /**
+     * 将帧数据追加到当前 HLS 切片中并在合适时机完成封包
+     */
+    private void appendHlsFrame(byte[] frameBytes, boolean isKeyFrame, long ptsUs) {
+        synchronized (hlsLock) {
+            if (isKeyFrame) {
+                // 如果当前分片已有数据，且达到切片门限（>= 800ms 或 >= 300KB），进行切片封包
+                if (currentSegmentStartPtsUs > 0 && currentSegmentBuffer.size() > 0) {
+                    long durationUs = ptsUs - currentSegmentStartPtsUs;
+                    if (durationUs >= 800_000L || currentSegmentBuffer.size() >= 300 * 1024) {
+                        double durSec = Math.max(0.3, durationUs / 1_000_000.0);
+                        byte[] segData = currentSegmentBuffer.toByteArray();
+                        hlsSegments.add(new HlsSegment(segmentSequenceCounter++, durSec, segData));
+                        if (hlsSegments.size() > MAX_HLS_SEGMENTS) {
+                            hlsSegments.remove(0);
+                        }
+                        currentSegmentBuffer.reset();
+                        hlsLock.notifyAll(); // 唤醒正在等待分片的 HTTP 请求
+                    }
+                }
+                if (currentSegmentBuffer.size() == 0) {
+                    currentSegmentStartPtsUs = ptsUs;
                 }
             }
 
-            // 限制队列长度防止慢客户端导致内存溢出
-            if (session.sendQueue.size() > 50) {
-                session.sendQueue.poll();
+            // 只要分片有合法的起点关键帧，就将帧数据追加到当前分片
+            if (currentSegmentStartPtsUs > 0) {
+                currentSegmentBuffer.write(frameBytes, 0, frameBytes.length);
+                currentSegmentLastPtsUs = ptsUs;
             }
-            session.sendQueue.offer(frameBytes);
         }
     }
 
@@ -480,16 +705,14 @@ public class LocalHttpTsServer {
                 // 末尾包不足 188 字节，填充 Adaptation Field Stuffing
                 int stuffingLen = availablePayload - remaining;
                 if ((ts[3] & 0x20) == 0) {
-                    // 原先无 adaptation field
                     ts[3] |= 0x20;
                     ts[headerLen] = (byte) (stuffingLen - 1);
                     if (stuffingLen > 1) {
-                        ts[headerLen + 1] = 0x00; // flags
+                        ts[headerLen + 1] = 0x00;
                         Arrays.fill(ts, headerLen + 2, headerLen + stuffingLen, (byte) 0xFF);
                     }
                     headerLen += stuffingLen;
                 } else {
-                    // 已有 adaptation field，追加填充
                     int currentAdaptLen = ts[4] & 0xFF;
                     int newAdaptLen = currentAdaptLen + stuffingLen;
                     ts[4] = (byte) newAdaptLen;
@@ -539,6 +762,13 @@ public class LocalHttpTsServer {
         clientSessions.clear();
         synchronized (gopTsCache) {
             gopTsCache.clear();
+        }
+        synchronized (hlsLock) {
+            hlsSegments.clear();
+            currentSegmentBuffer.reset();
+            currentSegmentStartPtsUs = -1;
+            currentSegmentLastPtsUs = -1;
+            hlsLock.notifyAll();
         }
     }
 }
