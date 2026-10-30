@@ -1,6 +1,9 @@
-# 跨平台多协议投屏与反向控制系统
+# 跨平台多协议投屏与反向控制系统 (ACast)
 
-一套集成了 **“B站/DLNA 免装客户端大屏投屏”** 与 **“Windows/macOS 桌面端 USB/Wi-Fi 极低延迟反向操控（全架构原生支持）”** 的投屏系统。
+一套集成了 **“B站/DLNA 免装客户端大屏投屏”** 与 **“Windows/macOS 桌面端 USB/Wi-Fi 极低延迟反向操控（全架构原生支持）”** 的开源投屏系统。
+
+[![Release](https://img.shields.io/github/v/release/cat-clever/ACast)](https://github.com/cat-clever/ACast/releases)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 ## 核心架构与多芯片支持
 - 💻 **桌面端多架构原生支持（Windows & macOS 控制端）**：
@@ -16,6 +19,10 @@
   - **Android (Android 7+) 控制**：基于 USB / 无线 ADB 原生隧道直接注入触控与按键，免 Root，零延迟；支持无障碍服务。
   - **iOS (iOS 16+) 控制**：采用行业标准蓝牙 HID 模拟结合 iPhone“辅助触控（AssistiveTouch）”，免越狱实现鼠标操控。
 - 🚀 **100% 纯云端 GitHub Actions 矩阵编译**：
-  - 云端自动打包输出：`Android APK`、`iOS App`、`Windows x64 (.zip)`、`Windows ARM64 (.zip)`、`macOS Universal (.tar.gz)` 5 大产物。
+  - 云端自动打包输出：`Android APK`、`iOS App`、`Windows x64 (.zip)`、`Windows ARM64 (.zip)`、`macOS Universal (.dmg)` 5 大产物。
+
+## 开源协议
+
+本项目采用 **[GNU General Public License v3.0 (GPLv3)](LICENSE)** 开源许可证。
 
 详细系统架构与协议实现请参阅：[项目开发说明文档](docs/PROJECT_SPEC.md)
