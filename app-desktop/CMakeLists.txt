@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(acast_desktop VERSION 0.1.2 LANGUAGES CXX)
+project(acast_desktop VERSION 0.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,8 +21,8 @@ if(APPLE)
     set(MACOSX_BUNDLE_ICON_FILE "acast.icns")
     set(MACOSX_BUNDLE_BUNDLE_NAME "ACast")
     set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.catclever.acast")
-    set(MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.2")
-    set(MACOSX_BUNDLE_BUNDLE_VERSION "0.1.2")
+    set(MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.3")
+    set(MACOSX_BUNDLE_BUNDLE_VERSION "0.1.3")
 
     set_source_files_properties(
         resources/acast.icns

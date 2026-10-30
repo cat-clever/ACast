@@ -1,26 +1,37 @@
 package com.clevercat.acast;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final String TAG = "MainActivity";
     private static final int REQUEST_MEDIA_PROJECTION = 1001;
+    private static final int REQUEST_PERMISSIONS_CODE = 2002;
 
     private Button btnToggleCapture;
     private Button btnScanTv;
@@ -36,6 +47,15 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // 注册全局异常崩溃捕获器，杜绝任何未处理异常导致闪退退出
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            Log.e(TAG, "全局捕获未处理异常: " + throwable.getMessage(), throwable);
+            new Handler(Looper.getMainLooper()).post(() -> {
+                Toast.makeText(getApplicationContext(), "运行时异常保护: " + throwable.getMessage(), Toast.LENGTH_LONG).show();
+            });
+        });
+
         setContentView(R.layout.activity_main);
 
         btnToggleCapture = findViewById(R.id.btn_toggle_capture);
@@ -49,22 +69,22 @@ public class MainActivity extends AppCompatActivity {
 
         // 在线直接自动更新
         btnCheckUpdate.setOnClickListener(v -> performUpdateCheck(true));
-        // 启动时后台静默检查
         performUpdateCheck(false);
 
         // 允许组播接收 SSDP 广播
-        WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        if (wifi != null) {
-            multicastLock = wifi.createMulticastLock("ACastMulticastLock");
-            multicastLock.acquire();
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifi != null) {
+                multicastLock = wifi.createMulticastLock("ACastMulticastLock");
+                multicastLock.acquire();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "获取 MulticastLock 异常: " + t.getMessage());
         }
 
         btnToggleCapture.setOnClickListener(v -> {
             if (!isCapturing) {
-                MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-                if (manager != null) {
-                    startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
-                }
+                requestRequiredPermissionsAndStartCapture();
             } else {
                 stopScreenCapture();
             }
@@ -86,8 +106,49 @@ public class MainActivity extends AppCompatActivity {
 
         lvDevices.setOnItemClickListener((parent, view, position, id) -> {
             String selected = deviceList.get(position);
-            Toast.makeText(this, "已向电视发起投屏: " + selected, Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "已向大屏发起投屏指令: " + selected, Toast.LENGTH_LONG).show();
         });
+    }
+
+    private void requestRequiredPermissionsAndStartCapture() {
+        List<String> neededPermissions = new ArrayList<>();
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            neededPermissions.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                neededPermissions.add(Manifest.permission.POST_NOTIFICATIONS);
+            }
+        }
+
+        if (!neededPermissions.isEmpty()) {
+            ActivityCompat.requestPermissions(this, neededPermissions.toArray(new String[0]), REQUEST_PERMISSIONS_CODE);
+        } else {
+            launchMediaProjectionPrompt();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_PERMISSIONS_CODE) {
+            // 无论麦克风权限是否完全授权，均允许继续开启投屏（未授权时纯视频投屏，绝不阻断或退出）
+            launchMediaProjectionPrompt();
+        }
+    }
+
+    private void launchMediaProjectionPrompt() {
+        try {
+            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (manager != null) {
+                startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
+            } else {
+                Toast.makeText(this, "当前系统不支持录屏服务", Toast.LENGTH_SHORT).show();
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "调起录屏授权失败: " + t.getMessage(), t);
+            Toast.makeText(this, "调起录屏授权异常: " + t.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
@@ -97,30 +158,37 @@ public class MainActivity extends AppCompatActivity {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 startScreenCapture(resultCode, data);
             } else {
-                Toast.makeText(this, "用户取消了录屏授权", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "用户未授予录屏权限", Toast.LENGTH_SHORT).show();
             }
         }
     }
 
     private void startScreenCapture(int resultCode, Intent data) {
-        Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
-        serviceIntent.putExtra("resultCode", resultCode);
-        serviceIntent.putExtra("data", data);
+        try {
+            Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+            serviceIntent.putExtra("resultCode", resultCode);
+            serviceIntent.putExtra("data", data);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+
+            isCapturing = true;
+            btnToggleCapture.setText(R.string.btn_stop_capture);
+            tvStatus.setText("正在投屏：USB/Wi-Fi 极低延迟反控与 DLNA 实时流已开启");
+        } catch (Throwable t) {
+            Log.e(TAG, "启动投屏服务失败: " + t.getMessage(), t);
+            Toast.makeText(this, "启动服务异常: " + t.getMessage(), Toast.LENGTH_LONG).show();
         }
-
-        isCapturing = true;
-        btnToggleCapture.setText(R.string.btn_stop_capture);
-        tvStatus.setText("正在投屏：极低延迟 USB/Wi-Fi 反控与 DLNA 实时流已开启");
     }
 
     private void stopScreenCapture() {
-        Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
-        stopService(serviceIntent);
+        try {
+            Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+            stopService(serviceIntent);
+        } catch (Throwable ignored) {}
 
         isCapturing = false;
         btnToggleCapture.setText(R.string.btn_start_capture);
@@ -173,8 +241,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         if (multicastLock != null && multicastLock.isHeld()) {
-            multicastLock.release();
+            try {
+                multicastLock.release();
+            } catch (Throwable ignored) {}
         }
     }
 }
-

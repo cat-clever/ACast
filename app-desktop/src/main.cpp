@@ -14,7 +14,7 @@
 
 void PrintBanner() {
     std::cout << "====================================================\n";
-    std::cout << "       ACast 跨平台投屏与反向控制端 v0.1.2          \n";
+    std::cout << "       ACast 跨平台投屏与反向控制端 v0.1.3          \n";
     std::cout << "  支持 DLNA / Cast / AirPlay 投屏 & USB/Wi-Fi 极低延迟反控  \n";
     std::cout << "  内置直接在线自动热更新系统 (免手动下载 DMG/ZIP)   \n";
 #if defined(_M_ARM64) || defined(__aarch64__)

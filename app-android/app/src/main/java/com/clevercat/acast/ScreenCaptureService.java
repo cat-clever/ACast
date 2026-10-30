@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.MediaCodec;
@@ -14,7 +15,9 @@ import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Surface;
@@ -23,7 +26,6 @@ import android.view.WindowManager;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 
 public class ScreenCaptureService extends Service {
@@ -45,17 +47,29 @@ public class ScreenCaptureService extends Service {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("ACast 投屏服务运行中")
                 .setContentText("正在传输屏幕与音频，USB/Wi-Fi 反控监听端口 19999")
-                .setSmallIcon(android.R.drawable.ic_menu_slideshow)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
                 .build();
-        startForeground(NOTIFICATION_ID, notification);
 
-        // 启动 FastMirror 桌面反控通信服务
-        FastMirrorSender.getInstance().startServer(19999);
-        // 启动 DLNA / Cast / AirPlay 实时流服务器
-        LocalHttpTsServer.getInstance().startServer(8088);
+        // Android 14 (API 34) 及 Android 10+ 显式指定 FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
+
+        try {
+            // 启动 FastMirror 桌面反控通信服务
+            FastMirrorSender.getInstance().startServer(19999);
+            // 启动 DLNA / Cast / AirPlay 实时流服务器
+            LocalHttpTsServer.getInstance().startServer(8088);
+        } catch (Throwable t) {
+            Log.e(TAG, "启动本地后台推流服务异常: " + t.getMessage(), t);
+        }
     }
 
     @Override
@@ -66,38 +80,109 @@ public class ScreenCaptureService extends Service {
             if (resultCode != 0 && data != null) {
                 MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
                 if (manager != null) {
-                    mediaProjection = manager.getMediaProjection(resultCode, data);
-                    startEncoding();
+                    try {
+                        mediaProjection = manager.getMediaProjection(resultCode, data);
+                        if (mediaProjection != null) {
+                            startEncoding();
+                        } else {
+                            Log.e(TAG, "获取 mediaProjection 结果为空！");
+                        }
+                    } catch (Throwable t) {
+                        Log.e(TAG, "获取 MediaProjection 失败: " + t.getMessage(), t);
+                    }
                 }
             }
         }
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     private void startEncoding() {
+        if (mediaProjection == null) return;
+
+        // Android 14 强制要求：在 createVirtualDisplay 前必须注册回调！
+        mediaProjection.registerCallback(new MediaProjection.Callback() {
+            @Override
+            public void onStop() {
+                super.onStop();
+                Log.i(TAG, "MediaProjection 停止回调触发");
+                stopSelf();
+            }
+        }, new Handler(Looper.getMainLooper()));
+
         WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         DisplayMetrics metrics = new DisplayMetrics();
-        wm.getDefaultDisplay().getRealMetrics(metrics);
+        if (wm != null && wm.getDefaultDisplay() != null) {
+            wm.getDefaultDisplay().getRealMetrics(metrics);
+        } else {
+            metrics = getResources().getDisplayMetrics();
+        }
 
-        int width = metrics.widthPixels;
-        int height = metrics.heightPixels;
-        int density = metrics.densityDpi;
+        int origW = metrics.widthPixels > 0 ? metrics.widthPixels : 1080;
+        int origH = metrics.heightPixels > 0 ? metrics.heightPixels : 1920;
+        int density = metrics.densityDpi > 0 ? metrics.densityDpi : 320;
 
-        // 对齐 16 字节
-        width = (width / 16) * 16;
-        height = (height / 16) * 16;
+        // 自适应缩放分辨率：限制宽最高 1080，高最高 1920，保持比例并做 16 字节对齐，防止某些芯片硬编码器崩溃
+        float scale = 1.0f;
+        int maxDim = Math.max(origW, origH);
+        if (maxDim > 1920) {
+            scale = 1920.0f / maxDim;
+        }
+        int encW = ((int) (origW * scale) / 16) * 16;
+        int encH = ((int) (origH * scale) / 16) * 16;
+        if (encW <= 0) encW = 720;
+        if (encH <= 0) encH = 1280;
 
+        Log.i(TAG, "屏幕原始分辨率: " + origW + "x" + origH + ", 编码分辨率: " + encW + "x" + encH);
+
+        boolean initSuccess = initCodec(encW, encH, density, 5000000);
+        // 若首选分辨率初始化失败，回退到通用的 720P 安全配置重试
+        if (!initSuccess) {
+            Log.w(TAG, "首选编码分辨率失败，尝试回退到标准 720x1280 分辨率...");
+            initSuccess = initCodec(720, 1280, density, 3000000);
+        }
+
+        if (!initSuccess) {
+            Log.e(TAG, "硬件编码器均无法初始化，请检查当前设备编解码驱动！");
+            return;
+        }
+
+        // 启动音频捕获（包裹在 try-catch 中，即使音频捕获受限也不影响屏幕投屏）
         try {
+            audioCaptureHelper = new AudioCaptureHelper();
+            audioCaptureHelper.startCapture(mediaProjection, (buffer, size) -> {
+                FastMirrorSender.getInstance().sendAudio(buffer, size);
+                LocalHttpTsServer.getInstance().pushAudio(buffer, size);
+            });
+        } catch (Throwable t) {
+            Log.w(TAG, "音频采集开启失败（已静默降级为纯画面投屏）: " + t.getMessage());
+        }
+    }
+
+    private boolean initCodec(int width, int height, int density, int bitRate) {
+        try {
+            if (videoCodec != null) {
+                try {
+                    videoCodec.stop();
+                    videoCodec.release();
+                } catch (Throwable ignored) {}
+                videoCodec = null;
+            }
+
             MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height);
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 6000000); // 6 Mbps
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 60);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate);
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 
             videoCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
             videoCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             inputSurface = videoCodec.createInputSurface();
             videoCodec.start();
+
+            if (virtualDisplay != null) {
+                virtualDisplay.release();
+                virtualDisplay = null;
+            }
 
             virtualDisplay = mediaProjection.createVirtualDisplay(
                     "ACastVirtualDisplay",
@@ -107,39 +192,46 @@ public class ScreenCaptureService extends Service {
             );
 
             isEncoding = true;
-            encoderThread = new Thread(this::drainEncoder);
+            encoderThread = new Thread(this::drainEncoder, "ACastEncoderThread");
             encoderThread.start();
+            return true;
 
-            // 启动音频捕获
-            audioCaptureHelper = new AudioCaptureHelper();
-            audioCaptureHelper.startCapture(mediaProjection, (buffer, size) -> {
-                FastMirrorSender.getInstance().sendAudio(buffer, size);
-                LocalHttpTsServer.getInstance().pushAudio(buffer, size);
-            });
-
-        } catch (IOException e) {
-            Log.e(TAG, "创建硬件编码器失败: " + e.getMessage());
+        } catch (Throwable t) {
+            Log.e(TAG, "initCodec 失败 (" + width + "x" + height + "): " + t.getMessage(), t);
+            if (videoCodec != null) {
+                try {
+                    videoCodec.release();
+                } catch (Throwable ignored) {}
+                videoCodec = null;
+            }
+            return false;
         }
     }
 
     private void drainEncoder() {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
         while (isEncoding) {
-            int outputBufferIndex = videoCodec.dequeueOutputBuffer(bufferInfo, 10000);
-            if (outputBufferIndex >= 0) {
-                ByteBuffer outputBuffer = videoCodec.getOutputBuffer(outputBufferIndex);
-                if (outputBuffer != null && bufferInfo.size > 0) {
-                    byte[] outData = new byte[bufferInfo.size];
-                    outputBuffer.get(outData);
+            try {
+                if (videoCodec == null) break;
+                int outputBufferIndex = videoCodec.dequeueOutputBuffer(bufferInfo, 10000);
+                if (outputBufferIndex >= 0) {
+                    ByteBuffer outputBuffer = videoCodec.getOutputBuffer(outputBufferIndex);
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        byte[] outData = new byte[bufferInfo.size];
+                        outputBuffer.get(outData);
 
-                    boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                        boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
 
-                    // 分发至自研 FastMirror 极速反控通道
-                    FastMirrorSender.getInstance().sendVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
-                    // 分发至 DLNA 实时 TS 流
-                    LocalHttpTsServer.getInstance().pushVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
+                        // 分发至自研 FastMirror 极速反控通道
+                        FastMirrorSender.getInstance().sendVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
+                        // 分发至 DLNA 实时 TS 流
+                        LocalHttpTsServer.getInstance().pushVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
+                    }
+                    videoCodec.releaseOutputBuffer(outputBufferIndex, false);
                 }
-                videoCodec.releaseOutputBuffer(outputBufferIndex, false);
+            } catch (Throwable t) {
+                Log.w(TAG, "drainEncoder 循环异常: " + t.getMessage());
+                break;
             }
         }
     }
@@ -164,26 +256,37 @@ public class ScreenCaptureService extends Service {
         isEncoding = false;
         if (encoderThread != null) {
             try {
-                encoderThread.join(500);
-            } catch (InterruptedException ignored) {}
+                encoderThread.join(300);
+            } catch (Throwable ignored) {}
         }
         if (audioCaptureHelper != null) {
-            audioCaptureHelper.stopCapture();
+            try {
+                audioCaptureHelper.stopCapture();
+            } catch (Throwable ignored) {}
+        }
+        if (virtualDisplay != null) {
+            try {
+                virtualDisplay.release();
+            } catch (Throwable ignored) {}
+            virtualDisplay = null;
         }
         if (videoCodec != null) {
             try {
                 videoCodec.stop();
                 videoCodec.release();
-            } catch (Exception ignored) {}
-        }
-        if (virtualDisplay != null) {
-            virtualDisplay.release();
+            } catch (Throwable ignored) {}
+            videoCodec = null;
         }
         if (mediaProjection != null) {
-            mediaProjection.stop();
+            try {
+                mediaProjection.stop();
+            } catch (Throwable ignored) {}
+            mediaProjection = null;
         }
-        FastMirrorSender.getInstance().stopServer();
-        LocalHttpTsServer.getInstance().stopServer();
+        try {
+            FastMirrorSender.getInstance().stopServer();
+            LocalHttpTsServer.getInstance().stopServer();
+        } catch (Throwable ignored) {}
     }
 
     @Nullable
@@ -192,4 +295,3 @@ public class ScreenCaptureService extends Service {
         return null;
     }
 }
-

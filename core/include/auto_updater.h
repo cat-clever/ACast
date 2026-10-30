@@ -17,7 +17,7 @@ struct UpdateInfo {
 
 class AutoUpdater {
 public:
-    static constexpr const char* CURRENT_VERSION = "0.1.2";
+    static constexpr const char* CURRENT_VERSION = "0.1.3";
 
     // 检查 GitHub Releases 是否有新版本
     static UpdateInfo CheckForUpdate(const std::string& owner = "cat-clever", const std::string& repo = "ACast");
