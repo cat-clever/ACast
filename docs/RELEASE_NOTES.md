@@ -6,6 +6,9 @@
    * **根因定位**：修复 `gui_macos.mm` 中由于异步 GCD Block 捕获了后台 C++ 线程栈上的局部变量引用，在主线程 RunLoop 调度执行时该栈帧已被释放销毁，导致解引用无效内存地址（`KERN_INVALID_ADDRESS`）触发段错误；
    * **全生命周期重构**：核心控制层通知全部重构为值传递深拷贝，并在派发到主线程 Block 前显式转换为 ARC 托管的强引用 Cocoa 原生对象；
    * **时序与代理保护**：提升 `AppDelegate` 为全局强引用单例，将服务初始化严格安排在主窗口完全加载渲染完成后启动，彻底杜绝任何时序竞争。
+2. **iOS 端新增补签名专用 IPA 安装包 (`acast-ios.ipa`)**：
+   * 采用标准 Payload 架构直接打包 arm64 原生 Mach-O 二进制文件与 ReplayKit 2 广播上传扩展；
+   * 预置合规 Info.plist 与 Ad-hoc 签名，支持爱思助手、AltStore、Sideloadly、牛蛙助手、轻松签及 TrollStore 巨魔商店一键补签/重签名安装。
 
 ---
 

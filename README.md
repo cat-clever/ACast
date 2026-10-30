@@ -40,7 +40,8 @@
 | **Windows x86_64**<br>传统 Intel / AMD 64位电脑 | `acast-windows-x64.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-windows-x64.zip) | 解压即用，原生内嵌图标，支持 USB 反控手机 |
 | **Windows ARM64**<br>骁龙 X Elite / Surface ARM / Win11 on ARM | `acast-windows-arm64.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-windows-arm64.zip) | 原生 ARM64 指令集，无模拟损耗 |
 | **Android 手机端**<br>Android 7.0 及以上所有机型 | `acast-android.apk` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-android.apk) | 支持 DLNA / Cast / AirPlay 投屏 & USB/Wi-Fi 被控 |
-| **iOS 手机端**<br>iPhone (iOS 16.0 及以上) | `acast-ios.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-ios.zip) | 包含 ReplayKit 2 广播上传扩展与应用图标 |
+| **iOS 手机端 (IPA)**<br>iPhone (iOS 16.0 及以上) | `acast-ios.ipa` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-ios.ipa) | **补签名专用 IPA**，支持爱思助手/AltStore/牛蛙/巨魔一键重签安装 |
+| **iOS 手机端源码包**<br>iPhone (iOS 16.0 及以上) | `acast-ios.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-ios.zip) | 包含 ReplayKit 2 广播上传扩展与完整工程源码归档 |
 
 > 💡 提示：如需查看版本更新日志或下载历史版本，请访问 [GitHub Releases 页面](https://github.com/cat-clever/ACast/releases)。
 

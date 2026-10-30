@@ -187,19 +187,31 @@ jobs:
           retention-days: 7
 
   # =========================================================================
-  # 5. iOS 移动端源码与扩展包
+  # 5. iOS 移动端 IPA 构建 (支持第三方签名/爱思助手/AltStore/牛蛙助手补签名)
   # =========================================================================
   ios-app:
-    name: iOS 手机端模块 (iOS 16+)
+    name: iOS 手机端 IPA (iOS 16+)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - name: 打包 iOS 投屏主工程与 ReplayKit 扩展
+      - name: 编译并打包 iOS 可签名 IPA (含 ReplayKit 扩展)
+        run: |
+          chmod +x scripts/build_ios_ipa.sh
+          ./scripts/build_ios_ipa.sh 0.2.1
+
+      - name: 同时生成源码与扩展归档包
         run: |
           tar -czvf acast-ios.zip app-ios/ README.md
 
-      - name: 上传 iOS 产物
+      - name: 上传 iOS IPA 产物 (补签名专用)
+        uses: actions/upload-artifact@v4
+        with:
+          name: acast-ios.ipa
+          path: acast-ios.ipa
+          retention-days: 7
+
+      - name: 上传 iOS 源码扩展包产物
         uses: actions/upload-artifact@v4
         with:
           name: acast-ios.zip
