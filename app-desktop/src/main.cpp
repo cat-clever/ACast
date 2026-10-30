@@ -10,11 +10,15 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <unistd.h>
+#include <mach-o/dyld.h>
+#include <cstdlib>
 #endif
 
 void PrintBanner() {
     std::cout << "====================================================\n";
-    std::cout << "       ACast 跨平台投屏与反向控制端 v0.1.4          \n";
+    std::cout << "       ACast 跨平台投屏与反向控制端 v0.1.5          \n";
     std::cout << "  支持 DLNA / Cast / AirPlay 投屏 & USB/Wi-Fi 极低延迟反控  \n";
     std::cout << "  内置直接在线自动热更新系统 (免手动下载 DMG/ZIP)   \n";
 #if defined(_M_ARM64) || defined(__aarch64__)
@@ -26,6 +30,33 @@ void PrintBanner() {
 }
 
 int main(int argc, char* argv[]) {
+#if defined(__APPLE__)
+    // 检查是否已经是子进程或者在终端中运行，防止死循环
+    bool is_child = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--child" || std::string(argv[i]) == "--cli") {
+            is_child = true;
+            break;
+        }
+    }
+
+    // 在 macOS 下，如果是通过 Finder/访达双击 .app 打开，默认没有附着任何终端窗口
+    // 自动激活系统终端 (Terminal.app) 弹出交互控制台窗口
+    if (!is_child && !isatty(STDIN_FILENO)) {
+        char raw_path[1024] = {0};
+        uint32_t size = sizeof(raw_path);
+        if (_NSGetExecutablePath(raw_path, &size) == 0) {
+            char real[1024];
+            std::string exec_path = (realpath(raw_path, real) != nullptr) ? real : raw_path;
+            std::string apple_script =
+                "osascript -e 'tell application \"Terminal\" to activate' "
+                "-e 'tell application \"Terminal\" to do script \"" + exec_path + " --child\"' >/dev/null </dev/null &";
+            std::system(apple_script.c_str());
+            return 0;
+        }
+    }
+#endif
+
 #if defined(_WIN32)
     SetConsoleOutputCP(CP_UTF8);
 #endif
