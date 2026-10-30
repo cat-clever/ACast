@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   build:
-    uses: ./.github/workflows/ci.yml
+    name: 运行构建流程
+    uses: ./.github/workflows/build-all.yml
 
   publish:
     name: 汇总全架构产物并发布 Release
