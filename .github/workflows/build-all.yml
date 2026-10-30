@@ -19,12 +19,18 @@ jobs:
       - name: 构建二进制文件
         run: cmake --build build --config Release --parallel
 
-      - name: 打包 Windows x64 产物
+      - name: 打包 Windows x64 产物 (内置官方 ADB 工具)
         shell: pwsh
         run: |
           mkdir dist
           Copy-Item build\app-desktop\Release\acast_desktop.exe dist\
           Copy-Item README.md dist\
+          curl.exe -L -f --connect-timeout 20 -o pt_win.zip https://dl.google.com/android/repository/platform-tools-latest-windows.zip
+          tar.exe -xf pt_win.zip
+          Copy-Item platform-tools\adb.exe dist\
+          Copy-Item platform-tools\AdbWinApi.dll dist\
+          Copy-Item platform-tools\AdbWinUsbApi.dll dist\
+          Remove-Item pt_win.zip, platform-tools -Recurse -Force
           Compress-Archive -Path dist\* -DestinationPath acast-windows-x64.zip
 
       - name: 上传 Windows x64 产物
@@ -49,12 +55,18 @@ jobs:
       - name: 构建二进制文件 (ARM64)
         run: cmake --build build-arm64 --config Release --parallel
 
-      - name: 打包 Windows ARM64 产物
+      - name: 打包 Windows ARM64 产物 (内置官方 ADB 工具)
         shell: pwsh
         run: |
           mkdir dist-arm64
           Copy-Item build-arm64\app-desktop\Release\acast_desktop.exe dist-arm64\
           Copy-Item README.md dist-arm64\
+          curl.exe -L -f --connect-timeout 20 -o pt_win.zip https://dl.google.com/android/repository/platform-tools-latest-windows.zip
+          tar.exe -xf pt_win.zip
+          Copy-Item platform-tools\adb.exe dist-arm64\
+          Copy-Item platform-tools\AdbWinApi.dll dist-arm64\
+          Copy-Item platform-tools\AdbWinUsbApi.dll dist-arm64\
+          Remove-Item pt_win.zip, platform-tools -Recurse -Force
           Compress-Archive -Path dist-arm64\* -DestinationPath acast-windows-arm64.zip
 
       - name: 上传 Windows ARM64 产物
@@ -97,6 +109,13 @@ jobs:
           mkdir -p dist-macos/ACast.app/Contents/Resources
           cp app-desktop/resources/acast.icns dist-macos/ACast.app/Contents/Resources/acast.icns
 
+          # 下载并内置 Google 官方 macOS 平台 ADB 工具
+          curl -L -f --connect-timeout 20 -o pt_darwin.zip https://dl.google.com/android/repository/platform-tools-latest-darwin.zip
+          unzip -q pt_darwin.zip
+          cp platform-tools/adb dist-macos/ACast.app/Contents/MacOS/adb
+          chmod +x dist-macos/ACast.app/Contents/MacOS/adb
+          rm -rf pt_darwin.zip platform-tools
+
           cat << 'EOF' > dist-macos/ACast.app/Contents/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -111,9 +130,9 @@ jobs:
               <key>CFBundleDisplayName</key>
               <string>ACast</string>
               <key>CFBundleVersion</key>
-              <string>0.2.5</string>
+              <string>0.2.6</string>
               <key>CFBundleShortVersionString</key>
-              <string>0.2.5</string>
+              <string>0.2.6</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleSignature</key>
@@ -198,7 +217,7 @@ jobs:
       - name: 编译并打包 iOS 可签名 IPA (含 ReplayKit 扩展)
         run: |
           chmod +x scripts/build_ios_ipa.sh
-          ./scripts/build_ios_ipa.sh 0.2.5
+          ./scripts/build_ios_ipa.sh 0.2.6
 
       - name: 同时生成源码与扩展归档包
         run: |

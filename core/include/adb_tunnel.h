@@ -17,8 +17,11 @@ public:
     AdbTunnel();
     ~AdbTunnel();
 
-    // 检查本地是否有 adb 命令可用
+    // 检查本地或内置是否有 adb 工具可用
     static bool IsAdbAvailable();
+
+    // 获取当前生效的 adb 可执行文件路径
+    static std::string GetAdbPath();
 
     // 获取当前已连接的 Android USB 设备列表
     static std::vector<AdbDevice> GetConnectedDevices();
@@ -37,6 +40,8 @@ public:
 
 private:
     static std::string ExecuteCommand(const std::string& cmd);
+    static std::string GetCurrentExecutablePath();
+    static bool EnsureBuiltinAdbDownloaded();
 };
 
 } // namespace adb

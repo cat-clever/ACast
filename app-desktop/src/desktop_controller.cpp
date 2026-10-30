@@ -128,16 +128,19 @@ void DesktopController::SetUsbDeviceCallback(UsbDeviceCallback cb) {
 }
 
 void DesktopController::RefreshUsbDevices() {
-    Log("[USB] 正在扫描通过 USB 连接的 Android 手机...");
+    Log("[USB] 正在检测 Android 手机连接 (优先内置 ADB 工具)...");
     std::thread([this]() {
         try {
             if (!acast::adb::AdbTunnel::IsAdbAvailable()) {
-                Log("[USB] 本地未检测到 adb 命令行工具，可使用局域网 Wi-Fi 投屏。");
+                Log("[USB] 内置与系统 ADB 均未就绪，可使用局域网 Wi-Fi 投屏。");
                 std::lock_guard<std::mutex> lock(mutex_);
                 usb_devices_.clear();
                 if (usb_cb_) usb_cb_(usb_devices_);
                 return;
             }
+
+            std::string adbPath = acast::adb::AdbTunnel::GetAdbPath();
+            Log("[USB] ADB 调试桥工具已就绪: " + adbPath);
 
             auto devs = acast::adb::AdbTunnel::GetConnectedDevices();
             {

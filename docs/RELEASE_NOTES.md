@@ -1,6 +1,14 @@
 # ACast 发版说明
 
-## v0.2.5 更新日志 (最新)
+## v0.2.6 更新日志 (最新)
+
+1. **桌面控制端全面内置 Google 官方 ADB 调试桥工具**：
+   * **出厂直接内置**：macOS Universal DMG 产物直接内置 Apple Silicon + Intel 官方 `adb` 工具（置于 `ACast.app/Contents/MacOS/adb`）；Windows 发行 ZIP 包中直接内置官方 `adb.exe`、`AdbWinApi.dll` 与 `AdbWinUsbApi.dll`，用户解压/双击即开，零环境依赖；
+   * **智能四级自动探测与动态补齐机制**：优先使用安装包内置 ADB，其次匹配本地标准 SDK，若全无则自动从 Google 官方高速通道静默安装至用户工具目录，彻底告别“本地未检测到 adb 命令行工具”。
+
+---
+
+## v0.2.5 更新日志
 
 1. **桌面控制端界面架构全面精简与职责纯粹化**：
    * **彻底剔除局域网大屏设备无用列表**：明确界定【手机发射端】与【桌面控制端】的职责分工，彻底移除 macOS Cocoa 原生视窗与 Windows Win32 视窗中的“局域网大屏设备 (DLNA / Cast / AirPlay)”表格与控件，停止无谓的后台大屏组播扫描；
