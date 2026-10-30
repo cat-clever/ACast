@@ -1,4 +1,5 @@
 #include "auto_updater.h"
+#include "process_runner.h"
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -31,25 +32,9 @@ namespace updater {
 
 namespace {
 
-// 执行命令行并捕获标准输出
+// 执行命令行并捕获标准输出 (静默执行，绝不弹出终端黑框)
 std::string RunCommandCapture(const std::string& cmd) {
-    std::string result;
-    char buffer[256];
-#if defined(_WIN32)
-    FILE* pipe = _popen(cmd.c_str(), "r");
-#else
-    FILE* pipe = popen(cmd.c_str(), "r");
-#endif
-    if (!pipe) return "";
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        result += buffer;
-    }
-#if defined(_WIN32)
-    _pclose(pipe);
-#else
-    pclose(pipe);
-#endif
-    return result;
+    return acast::process::RunSilentCapture(cmd);
 }
 
 // 递归确保多级目录存在
@@ -259,7 +244,7 @@ bool AutoUpdater::DownloadFile(const std::string& url, const std::string& save_p
 
     // 1. 首选通道：GitHub 直连
     std::string cmd1 = "curl -L -f -S --connect-timeout 15 --retry 2 --retry-delay 1 -o \"" + save_path + "\" \"" + url + "\"";
-    int ret1 = std::system(cmd1.c_str());
+    int ret1 = acast::process::RunSilent(cmd1);
     if (ret1 == 0 && is_valid_file(save_path)) {
         if (cb) cb("下载完成！", 60);
         return true;
@@ -270,7 +255,7 @@ bool AutoUpdater::DownloadFile(const std::string& url, const std::string& save_p
     std::remove(save_path.c_str());
     std::string mirror_url1 = "https://mirror.ghproxy.com/" + url;
     std::string cmd2 = "curl -L -f -S --connect-timeout 20 --retry 2 --retry-delay 1 -o \"" + save_path + "\" \"" + mirror_url1 + "\"";
-    int ret2 = std::system(cmd2.c_str());
+    int ret2 = acast::process::RunSilent(cmd2);
     if (ret2 == 0 && is_valid_file(save_path)) {
         if (cb) cb("高速下载完成！", 60);
         return true;
@@ -280,7 +265,7 @@ bool AutoUpdater::DownloadFile(const std::string& url, const std::string& save_p
     std::remove(save_path.c_str());
     std::string mirror_url2 = "https://ghproxy.net/" + url;
     std::string cmd3 = "curl -L -f -S --connect-timeout 20 --retry 2 --retry-delay 1 -o \"" + save_path + "\" \"" + mirror_url2 + "\"";
-    int ret3 = std::system(cmd3.c_str());
+    int ret3 = acast::process::RunSilent(cmd3);
     if (ret3 == 0 && is_valid_file(save_path)) {
         if (cb) cb("高速下载完成！", 60);
         return true;
@@ -403,12 +388,12 @@ bool AutoUpdater::ApplyWindowsUpdate(const std::string& zip_path, const std::fun
     std::string extract_dir = cache_dir + "\\extracted";
     CreateDirectoriesRecursively(extract_dir);
 
-    // 利用 Windows 原生 tar.exe 或 powershell 解压
+    // 利用 Windows 原生 tar.exe 或 powershell 静默解压 (绝不弹出黑框)
     std::string unzip_cmd = "tar.exe -xf \"" + zip_path + "\" -C \"" + extract_dir + "\"";
-    int ret = std::system(unzip_cmd.c_str());
+    int ret = acast::process::RunSilent(unzip_cmd);
     if (ret != 0) {
-        std::string ps_unzip = "powershell -Command \"Expand-Archive -Force -Path '" + zip_path + "' -DestinationPath '" + extract_dir + "'\"";
-        ret = std::system(ps_unzip.c_str());
+        std::string ps_unzip = "powershell -WindowStyle Hidden -Command \"Expand-Archive -Force -Path '" + zip_path + "' -DestinationPath '" + extract_dir + "'\"";
+        ret = acast::process::RunSilent(ps_unzip);
         if (ret != 0) {
             if (cb) cb("解压更新包失败", 0);
             return false;
@@ -439,9 +424,14 @@ bool AutoUpdater::ApplyWindowsUpdate(const std::string& zip_path, const std::fun
     if (cb) cb("更新完成！即将重启程序...", 100);
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    // 启动批处理并退出当前进程
-    std::string run_cmd = "start /b \"\" cmd.exe /c \"" + bat_path + "\"";
-    std::system(run_cmd.c_str());
+    // 使用 ShellExecuteExA 静默启动批处理 (SW_HIDE) 并退出当前进程
+    SHELLEXECUTEINFOA sei = {0};
+    sei.cbSize = sizeof(SHELLEXECUTEINFOA);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = "open";
+    sei.lpFile = bat_path.c_str();
+    sei.nShow = SW_HIDE;
+    ShellExecuteExA(&sei);
     std::exit(0);
     return true;
 }

@@ -130,9 +130,9 @@ jobs:
               <key>CFBundleDisplayName</key>
               <string>ACast</string>
               <key>CFBundleVersion</key>
-              <string>0.3.2</string>
+              <string>0.3.3</string>
               <key>CFBundleShortVersionString</key>
-              <string>0.3.2</string>
+              <string>0.3.3</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleSignature</key>
@@ -217,7 +217,7 @@ jobs:
       - name: 编译并打包 iOS 可签名 IPA (含 ReplayKit 扩展)
         run: |
           chmod +x scripts/build_ios_ipa.sh
-          ./scripts/build_ios_ipa.sh 0.3.2
+          ./scripts/build_ios_ipa.sh 0.3.3
 
       - name: 同时生成源码与扩展归档包
         run: |

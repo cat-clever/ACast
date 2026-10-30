@@ -53,11 +53,21 @@ static std::vector<PhoneItemData> g_phoneItems;
 
 static std::wstring Utf8ToWide(const std::string& str) {
     if (str.empty()) return L"";
-    int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, NULL, 0);
-    std::wstring wstr(size, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], size);
-    if (!wstr.empty() && wstr.back() == L'\0') wstr.pop_back();
-    return wstr;
+    // 优先尝试严格 UTF-8 解码
+    int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str.data(), (int)str.size(), NULL, 0);
+    if (size > 0) {
+        std::wstring wstr(size, 0);
+        MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &wstr[0], size);
+        return wstr;
+    }
+    // 降级为系统 ANSI 代码页 (应对 Windows 终端或外部工具可能输出的 GBK/CP936 字符串)
+    size = MultiByteToWideChar(CP_ACP, 0, str.data(), (int)str.size(), NULL, 0);
+    if (size > 0) {
+        std::wstring wstr(size, 0);
+        MultiByteToWideChar(CP_ACP, 0, str.data(), (int)str.size(), &wstr[0], size);
+        return wstr;
+    }
+    return std::wstring(str.begin(), str.end());
 }
 
 static void ReloadPhoneComboBox() {

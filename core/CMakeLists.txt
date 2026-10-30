@@ -24,6 +24,7 @@ set(CORE_HEADERS
     include/adb_tunnel.h
     include/auto_updater.h
     include/peer_discovery.h
+    include/process_runner.h
 )
 
 add_library(acast_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})

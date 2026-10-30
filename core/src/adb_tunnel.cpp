@@ -1,4 +1,5 @@
 #include "adb_tunnel.h"
+#include "process_runner.h"
 #include <cstdio>
 #include <iostream>
 #include <sstream>
@@ -114,20 +115,17 @@ bool AdbTunnel::EnsureBuiltinAdbDownloaded() {
 
     std::string zip_path = tools_dir + "\\pt_windows.zip";
     std::string dl_cmd = "curl.exe -L -f -S --connect-timeout 15 --retry 2 -o \"" + zip_path + "\" \"https://dl.google.com/android/repository/platform-tools-latest-windows.zip\"";
-    int ret = std::system(dl_cmd.c_str());
+    int ret = acast::process::RunSilent(dl_cmd);
     if (ret != 0) {
         std::string mirror_cmd = "curl.exe -L -f -S --connect-timeout 15 --retry 2 -o \"" + zip_path + "\" \"https://mirror.ghproxy.com/https://dl.google.com/android/repository/platform-tools-latest-windows.zip\"";
-        ret = std::system(mirror_cmd.c_str());
+        ret = acast::process::RunSilent(mirror_cmd);
     }
     if (ret == 0) {
         std::string unzip_cmd = "tar.exe -xf \"" + zip_path + "\" -C \"" + tools_dir + "\"";
-        std::system(unzip_cmd.c_str());
-        std::string move_adb = "copy /y \"" + tools_dir + "\\platform-tools\\adb.exe\" \"" + target_adb + "\" >nul";
-        std::system(move_adb.c_str());
-        std::string move_dll1 = "copy /y \"" + tools_dir + "\\platform-tools\\AdbWinApi.dll\" \"" + tools_dir + "\\AdbWinApi.dll\" >nul";
-        std::system(move_dll1.c_str());
-        std::string move_dll2 = "copy /y \"" + tools_dir + "\\platform-tools\\AdbWinUsbApi.dll\" \"" + tools_dir + "\\AdbWinUsbApi.dll\" >nul";
-        std::system(move_dll2.c_str());
+        acast::process::RunSilent(unzip_cmd);
+        CopyFileA((tools_dir + "\\platform-tools\\adb.exe").c_str(), target_adb.c_str(), FALSE);
+        CopyFileA((tools_dir + "\\platform-tools\\AdbWinApi.dll").c_str(), (tools_dir + "\\AdbWinApi.dll").c_str(), FALSE);
+        CopyFileA((tools_dir + "\\platform-tools\\AdbWinUsbApi.dll").c_str(), (tools_dir + "\\AdbWinUsbApi.dll").c_str(), FALSE);
         std::remove(zip_path.c_str());
         attr = GetFileAttributesA(target_adb.c_str());
         if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -260,26 +258,7 @@ std::string AdbTunnel::GetAdbPath() {
 }
 
 std::string AdbTunnel::ExecuteCommand(const std::string& cmd) {
-    std::array<char, 256> buffer;
-    std::string result;
-#if defined(_WIN32)
-    std::string wrapped_cmd = "\"" + cmd + "\"";
-    FILE* pipe = _popen(wrapped_cmd.c_str(), "r");
-#else
-    FILE* pipe = popen(cmd.c_str(), "r");
-#endif
-    if (!pipe) {
-        return "";
-    }
-    while (fgets(buffer.data(), (int)buffer.size(), pipe) != nullptr) {
-        result += buffer.data();
-    }
-#if defined(_WIN32)
-    _pclose(pipe);
-#else
-    pclose(pipe);
-#endif
-    return result;
+    return acast::process::RunSilentCapture(cmd);
 }
 
 bool AdbTunnel::IsAdbAvailable() {

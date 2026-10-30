@@ -1,6 +1,18 @@
 # ACast 发版说明
 
-## v0.3.2 更新日志 (最新)
+## v0.3.3 更新日志 (最新)
+
+1. **彻底解决 Windows 控制端文字乱码 (Mojibake)**：
+   * **全局开启 MSVC `/utf-8` 参数**：为 MSVC 编译系统强制注入 `/utf-8` 参数，确保所有 C++ 源码、宽字符字面量与日志在 GitHub Actions 英文环境编译时正确解析为 UTF-8 / UTF-16，杜绝按钮与标签乱码；
+   * **自适应宽字符解码**：`Utf8ToWide` 采用 UTF-8 校验与系统 ANSI (GBK/CP936) 兜底双通道，无缝兼容各类外部命令与终端控制台输出；
+   * **引入应用程序清单 (app.manifest)**：声明 Windows 10/11 原生 `<activeCodePage>UTF-8</activeCodePage>` 与现代 Common Controls 6.0，全面支持高分屏 DPI 自适应。
+2. **彻底杜绝终端黑框窗口弹出 (Zero Console Window Popup)**：
+   * **原生 Win32 静默进程调度引擎 (`process_runner.h`)**：全面替换 `_popen` 与 `std::system`；底层基于 `CreateProcessW` + `CREATE_NO_WINDOW` + `SW_HIDE` 管道，执行 ADB、设备检测、端口转发与触控模拟时全局零黑框；
+   * **静默热替换重启**：更新完成后通过 `ShellExecuteExA` 配合 `SW_HIDE` 静默重启程序。
+
+---
+
+## v0.3.2 更新日志
 
 1. **彻底解决 ADisplay / 智能电视大屏投屏中断 (Playback Stopped / Operation Stopped)**：
    * **绕开 ADisplay 点播换封装引擎**：通过深入分析 ADisplay 服务端源码，确定其内部 `MediaRelay` 会误将 `.m3u8` 当做点播文件并强行添加 `#EXT-X-ENDLIST` 导致播完前几秒后直接中断。将 DLNA 直连推送端点更新为 `http://<ip>:8088/live`，彻底绕过破坏性拦截，交由原生播放器（AVPlayer / ExoPlayer）以原生实时直播协议拉流，永不断流；

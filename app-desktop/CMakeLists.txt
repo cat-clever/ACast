@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(acast_desktop VERSION 0.3.2 LANGUAGES CXX)
+project(acast_desktop VERSION 0.3.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +14,7 @@ if(WIN32)
     list(APPEND DESKTOP_SOURCES
         src/gui_win.cpp
         resources/app.rc
+        resources/app.manifest
     )
 endif()
 
@@ -51,8 +52,8 @@ if(APPLE)
         MACOSX_BUNDLE_ICON_FILE "acast.icns"
         MACOSX_BUNDLE_BUNDLE_NAME "ACast"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.catclever.acast"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.3.2"
-        MACOSX_BUNDLE_BUNDLE_VERSION "0.3.2"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.3.3"
+        MACOSX_BUNDLE_BUNDLE_VERSION "0.3.3"
     )
 
     set_source_files_properties(

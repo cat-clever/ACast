@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.15)
-project(ACast VERSION 0.3.2 LANGUAGES CXX)
+project(ACast VERSION 0.3.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 全局强制 MSVC 使用 UTF-8 源码与执行字符集，彻底杜绝 Windows 界面乱码
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
 
 if(APPLE)
     enable_language(OBJCXX)
