@@ -1,6 +1,14 @@
 # ACast 发版说明
 
-## v0.2.4 更新日志 (最新)
+## v0.2.5 更新日志 (最新)
+
+1. **桌面控制端界面架构全面精简与职责纯粹化**：
+   * **彻底剔除局域网大屏设备无用列表**：明确界定【手机发射端】与【桌面控制端】的职责分工，彻底移除 macOS Cocoa 原生视窗与 Windows Win32 视窗中的“局域网大屏设备 (DLNA / Cast / AirPlay)”表格与控件，停止无谓的后台大屏组播扫描；
+   * **运行状态与日志视窗空间倍增**：将移除大屏列表后省下的大块垂直高度让给底部的【运行状态与事件日志】视窗，高度由 235 扩充至 410，手机 Wi-Fi 直连与 USB 反控链路日志一览无余，界面更加专业干净。
+
+---
+
+## v0.2.4 更新日志
 
 1. **彻底修复 macOS 及 Windows 端一键原地热更新失败与权限拒绝根因**：
    * **规范用户级缓存路径**：彻底移除应用安装目录下的相对路径 `update_cache`。macOS 采用标准用户缓存目录 `~/Library/Caches/com.catclever.acast/update`，Windows 采用 `%LOCALAPPDATA%\ACast\update`，杜绝从 `/Applications/ACast.app` 启动时工作目录在根目录 `/` 引起的 `EACCES (Permission denied)` 与 curl 错误 23；

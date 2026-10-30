@@ -34,7 +34,6 @@ DesktopController::~DesktopController() {
 void DesktopController::Init() {
     Log("ACast 控制端核心服务初始化就绪。");
     RefreshUsbDevices();
-    RefreshTvDevices();
     CheckUpdateAsync();
 }
 

@@ -7,10 +7,9 @@
 #include <vector>
 #include <string>
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate> {
+@interface AppDelegate : NSObject <NSApplicationDelegate> {
     NSWindow* window;
     NSTextView* logTextView;
-    NSTableView* tvTableView;
     NSTextField* updateBannerLabel;
     NSButton* updateButton;
     NSTextField* wifiStatusLabel;
@@ -19,19 +18,10 @@
     NSButton* connectWifiBtn;
     NSTextField* usbStatusLabel;
     NSProgressIndicator* updateProgressIndicator;
-    NSMutableArray<NSDictionary<NSString*, NSString*>*>* tvDevicesList;
 }
 @end
 
 @implementation AppDelegate
-
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        tvDevicesList = [[NSMutableArray alloc] init];
-    }
-    return self;
-}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     NSRect frame = NSMakeRect(0, 0, 780, 690);
@@ -188,42 +178,8 @@
 
     [contentView addSubview:phoneBox];
 
-    // ==================== 4. 局域网大屏设备卡片 ====================
-    NSBox* tvBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, 295, 735, 175)];
-    [tvBox setTitle:@"📺 局域网大屏设备 (DLNA / Cast / AirPlay)"];
-    [tvBox setTitleFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
-
-    NSButton* refreshTvBtn = [[NSButton alloc] initWithFrame:NSMakeRect(620, 125, 100, 30)];
-    [refreshTvBtn setTitle:@"搜索大屏"];
-    [refreshTvBtn setBezelStyle:NSBezelStyleRounded];
-    [refreshTvBtn setTarget:self];
-    [refreshTvBtn setAction:@selector(onRefreshTvClicked:)];
-    [tvBox addSubview:refreshTvBtn];
-
-    NSScrollView* tableScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(15, 15, 700, 105)];
-    [tableScrollView setHasVerticalScroller:YES];
-    [tableScrollView setBorderType:NSBezelBorder];
-
-    tvTableView = [[NSTableView alloc] initWithFrame:[tableScrollView bounds]];
-    NSTableColumn* colName = [[NSTableColumn alloc] initWithIdentifier:@"name"];
-    [[colName headerCell] setStringValue:@"设备名称 / 协议支持"];
-    [colName setWidth:380];
-    [tvTableView addTableColumn:colName];
-
-    NSTableColumn* colIp = [[NSTableColumn alloc] initWithIdentifier:@"ip"];
-    [[colIp headerCell] setStringValue:@"局域网 IP / 控制端点"];
-    [colIp setWidth:300];
-    [tvTableView addTableColumn:colIp];
-
-    [tvTableView setDataSource:self];
-    [tvTableView setDelegate:self];
-    [tableScrollView setDocumentView:tvTableView];
-    [tvBox addSubview:tableScrollView];
-
-    [contentView addSubview:tvBox];
-
-    // ==================== 5. 底部运行日志视窗 ====================
-    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 260, 200, 20)];
+    // ==================== 4. 运行状态与事件日志视窗 (宽敞全高显示) ====================
+    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 440, 200, 20)];
     [logTitle setStringValue:@"📋 运行状态与事件日志"];
     [logTitle setFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
     [logTitle setBezeled:NO];
@@ -231,14 +187,14 @@
     [logTitle setEditable:NO];
     [contentView addSubview:logTitle];
 
-    NSButton* clearLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(670, 257, 85, 26)];
+    NSButton* clearLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(670, 437, 85, 26)];
     [clearLogBtn setTitle:@"清空"];
     [clearLogBtn setBezelStyle:NSBezelStyleRounded];
     [clearLogBtn setTarget:self];
     [clearLogBtn setAction:@selector(onClearLogClicked:)];
     [contentView addSubview:clearLogBtn];
 
-    NSScrollView* logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, 735, 235)];
+    NSScrollView* logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, 735, 410)];
     [logScrollView setHasVerticalScroller:YES];
     [logScrollView setBorderType:NSBezelBorder];
 
@@ -251,20 +207,19 @@
     [logScrollView setDocumentView:logTextView];
     [contentView addSubview:logScrollView];
 
-    // ==================== 6. 注册 Controller 弱引用线程安全回调 ====================
+    // 绑定控制器日志与状态更新
     auto& ctl = acast::desktop::DesktopController::GetInstance();
     __weak typeof(self) weakSelf = self;
 
-    ctl.SetLogCallback([weakSelf](std::string line) {
-        NSString* text = [NSString stringWithUTF8String:(line + "\n").c_str()];
+    ctl.SetLogCallback([weakSelf](std::string msg) {
+        NSString* text = [NSString stringWithUTF8String:msg.c_str()] ?: @"";
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf || !strongSelf->logTextView) return;
-            NSAttributedString* attr = [[NSAttributedString alloc] initWithString:text attributes:@{
-                NSForegroundColorAttributeName: [NSColor colorWithCalibratedRed:0.85 green:0.90 blue:0.95 alpha:1.0],
-                NSFontAttributeName: [NSFont fontWithName:@"Menlo" size:11] ?: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
-            }];
-            [[strongSelf->logTextView textStorage] appendAttributedString:attr];
+            NSAttributedString* str = [[NSAttributedString alloc] initWithString:[text stringByAppendingString:@"\n"]
+                                                                      attributes:@{NSForegroundColorAttributeName: [NSColor colorWithCalibratedRed:0.92 green:0.92 blue:0.95 alpha:1.0],
+                                                                                   NSFontAttributeName: [NSFont fontWithName:@"Menlo" size:11] ?: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]}];
+            [[strongSelf->logTextView textStorage] appendAttributedString:str];
             [strongSelf->logTextView scrollRangeToVisible:NSMakeRange([[strongSelf->logTextView string] length], 0)];
         });
     });
@@ -275,7 +230,7 @@
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf || !strongSelf->wifiStatusLabel || !strongSelf->connectWifiBtn) return;
             if (connected) {
-                [strongSelf->wifiStatusLabel setStringValue:[NSString stringWithFormat:@"✓ 已直连: %@ (私有协议延迟<20ms)", addrStr]];
+                [strongSelf->wifiStatusLabel setStringValue:[NSString stringWithFormat:@"Wi-Fi 状态: 已连接 (%@) [超低延迟反控]", addrStr]];
                 [strongSelf->wifiStatusLabel setTextColor:[NSColor systemGreenColor]];
                 [strongSelf->connectWifiBtn setTitle:@"断开直连"];
             } else {
@@ -283,22 +238,6 @@
                 [strongSelf->wifiStatusLabel setTextColor:[NSColor secondaryLabelColor]];
                 [strongSelf->connectWifiBtn setTitle:@"连接 Wi-Fi"];
             }
-        });
-    });
-
-    ctl.SetTvDeviceCallback([weakSelf](std::vector<acast::dlna::DlnaDevice> devices) {
-        NSMutableArray* array = [[NSMutableArray alloc] initWithCapacity:devices.size()];
-        for (const auto& dev : devices) {
-            NSString* name = [NSString stringWithUTF8String:dev.friendly_name.c_str()] ?: @"未知设备";
-            std::string ep = dev.ip_address + "  (" + dev.control_url + ")";
-            NSString* endpoint = [NSString stringWithUTF8String:ep.c_str()] ?: @"";
-            [array addObject:@{@"name": name, @"endpoint": endpoint}];
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            AppDelegate* strongSelf = weakSelf;
-            if (!strongSelf || !strongSelf->tvTableView) return;
-            strongSelf->tvDevicesList = array;
-            [strongSelf->tvTableView reloadData];
         });
     });
 
@@ -409,44 +348,8 @@
     acast::desktop::DesktopController::GetInstance().SendRecentsKey();
 }
 
-- (void)onRefreshTvClicked:(id)sender {
-    acast::desktop::DesktopController::GetInstance().RefreshTvDevices();
-}
-
 - (void)onClearLogClicked:(id)sender {
     [[logTextView textStorage] setAttributedString:[[NSAttributedString alloc] initWithString:@""]];
-}
-
-#pragma mark - NSTableViewDataSource & Delegate
-
-- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
-    return (NSInteger)[tvDevicesList count];
-}
-
-- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
-    if (row < 0 || row >= (NSInteger)[tvDevicesList count]) return nil;
-    NSDictionary* dev = tvDevicesList[row];
-
-    NSTextField* cell = [tableView makeViewWithIdentifier:[tableColumn identifier] owner:self];
-    if (!cell) {
-        cell = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, [tableColumn width], 20)];
-        [cell setIdentifier:[tableColumn identifier]];
-        [cell setBezeled:NO];
-        [cell setDrawsBackground:NO];
-        [cell setEditable:NO];
-        [cell setSelectable:YES];
-        [cell setFont:[NSFont systemFontOfSize:12]];
-    }
-
-    if ([[tableColumn identifier] isEqualToString:@"name"]) {
-        [cell setStringValue:dev[@"name"] ?: @""];
-        [cell setTextColor:[NSColor labelColor]];
-    } else {
-        [cell setStringValue:dev[@"endpoint"] ?: @""];
-        [cell setTextColor:[NSColor secondaryLabelColor]];
-    }
-
-    return cell;
 }
 
 @end

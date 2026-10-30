@@ -15,10 +15,8 @@
 #define IDC_BTN_REFRESH_USB    1003
 #define IDC_BTN_USB_BACK       1004
 #define IDC_BTN_USB_HOME       1005
-#define IDC_BTN_REFRESH_TV     1006
 #define IDC_BTN_CLEAR_LOG      1007
 #define IDC_EDIT_LOG           1008
-#define IDC_LIST_TV            1009
 #define IDC_LABEL_USB_STATUS   1010
 #define IDC_LABEL_UPDATE_INFO  1011
 #define IDC_BTN_CONNECT_WIFI   1012
@@ -28,7 +26,6 @@
 #define IDC_BTN_USB_RECENTS    1016
 
 #define WM_ACAST_LOG           (WM_USER + 101)
-#define WM_ACAST_TV_UPDATE     (WM_USER + 102)
 #define WM_ACAST_USB_UPDATE    (WM_USER + 103)
 #define WM_ACAST_UPDATE_INFO   (WM_USER + 104)
 #define WM_ACAST_UPDATE_PROG   (WM_USER + 105)
@@ -36,7 +33,6 @@
 
 static HWND g_hWnd = NULL;
 static HWND g_hEditLog = NULL;
-static HWND g_hListTv = NULL;
 static HWND g_hLabelUsb = NULL;
 static HWND g_hLabelUpdate = NULL;
 static HWND g_hBtnUpdate = NULL;
@@ -95,8 +91,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             acast::desktop::DesktopController::GetInstance().SendHomeKey();
         } else if (id == IDC_BTN_USB_RECENTS) {
             acast::desktop::DesktopController::GetInstance().SendRecentsKey();
-        } else if (id == IDC_BTN_REFRESH_TV) {
-            acast::desktop::DesktopController::GetInstance().RefreshTvDevices();
         } else if (id == IDC_BTN_CLEAR_LOG) {
             SetWindowTextW(g_hEditLog, L"");
         }
@@ -130,29 +124,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
         }
         if (pAddr) delete pAddr;
-        break;
-    }
-
-    case WM_ACAST_TV_UPDATE: {
-        if (g_hListTv) {
-            SendMessageW(g_hListTv, LVM_DELETEALLITEMS, 0, 0);
-            auto devs = acast::desktop::DesktopController::GetInstance().GetTvDevices();
-            for (size_t i = 0; i < devs.size(); ++i) {
-                LVITEMW item = { 0 };
-                item.mask = LVIF_TEXT;
-                item.iItem = (int)i;
-                item.iSubItem = 0;
-                std::wstring name = Utf8ToWide(devs[i].friendly_name);
-                item.pszText = (LPWSTR)name.c_str();
-                SendMessageW(g_hListTv, LVM_INSERTITEMW, 0, (LPARAM)&item);
-
-                std::wstring ipInfo = Utf8ToWide(devs[i].ip_address + " (" + devs[i].control_url + ")");
-                LVITEMW subItem = { 0 };
-                subItem.iSubItem = 1;
-                subItem.pszText = (LPWSTR)ipInfo.c_str();
-                SendMessageW(g_hListTv, LVM_SETITEMTEXTW, (WPARAM)i, (LPARAM)&subItem);
-            }
-        }
         break;
     }
 
@@ -210,7 +181,7 @@ namespace desktop {
 int RunDesktopApp(int argc, char* argv[]) {
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
-    icex.dwICC = ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES;
+    icex.dwICC = ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES;
     InitCommonControlsEx(&icex);
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
@@ -298,48 +269,21 @@ int RunDesktopApp(int argc, char* argv[]) {
     HWND hBtnRecents = CreateWindowExW(0, L"BUTTON", L"任务 (Tasks)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 612, 146, 100, 28, g_hWnd, (HMENU)IDC_BTN_USB_RECENTS, hInstance, NULL);
     SendMessageW(hBtnRecents, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    // 4. 局域网大屏设备 GroupBox
-    HWND hBoxTv = CreateWindowExW(0, L"BUTTON", L"📺 局域网大屏设备 (DLNA / Cast / AirPlay)", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 205, 740, 175, g_hWnd, NULL, hInstance, NULL);
-    SendMessageW(hBoxTv, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
-
-    HWND hBtnRefTv = CreateWindowExW(0, L"BUTTON", L"搜索大屏", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 650, 225, 100, 28, g_hWnd, (HMENU)IDC_BTN_REFRESH_TV, hInstance, NULL);
-    SendMessageW(hBtnRefTv, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
-
-    g_hListTv = CreateWindowExW(
-        WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-        35, 260, 715, 105, g_hWnd, (HMENU)IDC_LIST_TV, hInstance, NULL
-    );
-    SendMessageW(g_hListTv, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    SendMessageW(g_hListTv, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
-
-    LVCOLUMNW col1 = { 0 };
-    col1.mask = LVCF_TEXT | LVCF_WIDTH;
-    col1.cx = 360;
-    col1.pszText = (LPWSTR)L"设备名称 / 协议";
-    SendMessageW(g_hListTv, LVM_INSERTCOLUMNW, 0, (LPARAM)&col1);
-
-    LVCOLUMNW col2 = { 0 };
-    col2.mask = LVCF_TEXT | LVCF_WIDTH;
-    col2.cx = 330;
-    col2.pszText = (LPWSTR)L"局域网 IP / 控制端点";
-    SendMessageW(g_hListTv, LVM_INSERTCOLUMNW, 1, (LPARAM)&col2);
-
-    // 5. 底部运行日志 GroupBox
-    HWND hBoxLog = CreateWindowExW(0, L"BUTTON", L"📋 运行状态与事件日志", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 390, 740, 265, g_hWnd, NULL, hInstance, NULL);
+    // 4. 运行状态与事件日志 GroupBox (占满下方大空间)
+    HWND hBoxLog = CreateWindowExW(0, L"BUTTON", L"📋 运行状态与事件日志", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 205, 740, 460, g_hWnd, NULL, hInstance, NULL);
     SendMessageW(hBoxLog, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
-    HWND hBtnClear = CreateWindowExW(0, L"BUTTON", L"清空", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 675, 408, 75, 24, g_hWnd, (HMENU)IDC_BTN_CLEAR_LOG, hInstance, NULL);
+    HWND hBtnClear = CreateWindowExW(0, L"BUTTON", L"清空", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 675, 225, 75, 26, g_hWnd, (HMENU)IDC_BTN_CLEAR_LOG, hInstance, NULL);
     SendMessageW(hBtnClear, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
     g_hEditLog = CreateWindowExW(
         WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-        35, 438, 715, 202, g_hWnd, (HMENU)IDC_EDIT_LOG, hInstance, NULL
+        35, 260, 715, 390, g_hWnd, (HMENU)IDC_EDIT_LOG, hInstance, NULL
     );
     SendMessageW(g_hEditLog, WM_SETFONT, (WPARAM)g_hFontMono, TRUE);
 
-    // 6. 注册 Controller 线程安全回调
+    // 5. 注册 Controller 线程安全回调
     auto& ctl = acast::desktop::DesktopController::GetInstance();
 
     ctl.SetLogCallback([](std::string line) {
@@ -353,12 +297,6 @@ int RunDesktopApp(int argc, char* argv[]) {
         if (g_hWnd) {
             std::string* p = new std::string(addr);
             PostMessage(g_hWnd, WM_ACAST_FM_UPDATE, connected ? 1 : 0, (LPARAM)p);
-        }
-    });
-
-    ctl.SetTvDeviceCallback([](std::vector<acast::dlna::DlnaDevice>) {
-        if (g_hWnd) {
-            PostMessage(g_hWnd, WM_ACAST_TV_UPDATE, 0, 0);
         }
     });
 
