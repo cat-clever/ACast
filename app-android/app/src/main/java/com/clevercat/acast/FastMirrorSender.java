@@ -21,6 +21,7 @@ public class FastMirrorSender {
     private static final byte MSG_TOUCH_MOVE = 0x11;
     private static final byte MSG_TOUCH_UP = 0x12;
     private static final byte MSG_KEY_DOWN = 0x20;
+    private static final byte MSG_TEXT_INPUT = 0x22;
 
     private static final FastMirrorSender INSTANCE = new FastMirrorSender();
 
@@ -29,32 +30,43 @@ public class FastMirrorSender {
     }
 
     private ServerSocket serverSocket;
-    private boolean isRunning = false;
+    private volatile boolean isRunning = false;
     private Thread serverThread;
     private final CopyOnWriteArrayList<Socket> clientSockets = new CopyOnWriteArrayList<>();
+    private byte[] cachedSpsPps = null;
 
-    public void startServer(int port) {
-        if (isRunning) return;
+    public synchronized void startServer(int port) {
+        if (isRunning && serverSocket != null && !serverSocket.isClosed()) return;
         isRunning = true;
 
         serverThread = new Thread(() -> {
             try {
-                serverSocket = new ServerSocket(port);
-                Log.i(TAG, "FastMirror 投屏与反控服务已监听端口: " + port);
+                if (serverSocket != null && !serverSocket.isClosed()) {
+                    try { serverSocket.close(); } catch (Throwable ignored) {}
+                }
+                serverSocket = new ServerSocket();
+                serverSocket.setReuseAddress(true);
+                serverSocket.bind(new java.net.InetSocketAddress(port));
+                Log.i(TAG, "FastMirror 投屏与反控服务已就绪，监听端口: " + port);
 
-                while (isRunning) {
+                while (isRunning && !serverSocket.isClosed()) {
                     Socket client = serverSocket.accept();
                     client.setTcpNoDelay(true);
+                    client.setSendBufferSize(256 * 1024);
                     clientSockets.add(client);
                     Log.i(TAG, "新控制器客户端已连接: " + client.getRemoteSocketAddress());
 
                     // 启动监听反向控制指令接收线程
-                    new Thread(() -> handleIncomingControl(client)).start();
+                    new Thread(() -> handleIncomingControl(client), "FastMirrorClientHandler").start();
                 }
             } catch (Exception e) {
-                Log.w(TAG, "FastMirror 服务停止: " + e.getMessage());
+                if (isRunning) {
+                    Log.w(TAG, "FastMirror 服务监听异常退出: " + e.getMessage());
+                }
+            } finally {
+                isRunning = false;
             }
-        });
+        }, "FastMirrorAcceptor");
         serverThread.start();
     }
 
@@ -93,17 +105,22 @@ public class FastMirrorSender {
                 // 处理反向控制触控与按键指令
                 ByteBuffer pb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
                 if (msgType == MSG_TOUCH_DOWN || msgType == MSG_TOUCH_MOVE || msgType == MSG_TOUCH_UP) {
-                    if (payloadLen >= 7) {
+                    if (payloadLen >= 5) {
                         byte pointerId = pb.get();
                         short x = pb.getShort();
                         short y = pb.getShort();
                         // 委托无障碍服务执行手势模拟
-                        ControlAccessibilityService.injectTouch(msgType, x, y);
+                        ControlAccessibilityService.injectTouch(msgType, x & 0xFFFF, y & 0xFFFF);
                     }
                 } else if (msgType == MSG_KEY_DOWN) {
-                    if (payloadLen >= 3) {
+                    if (payloadLen >= 2) {
                         short keyCode = pb.getShort();
                         ControlAccessibilityService.injectKey(keyCode);
+                    }
+                } else if (msgType == MSG_TEXT_INPUT) {
+                    if (payloadLen > 0) {
+                        String text = new String(payload, "UTF-8");
+                        ControlAccessibilityService.injectText(text);
                     }
                 }
             }
@@ -117,9 +134,36 @@ public class FastMirrorSender {
         }
     }
 
+    public synchronized void setSpsPps(byte[] spsPps) {
+        if (spsPps != null && spsPps.length > 0) {
+            this.cachedSpsPps = spsPps.clone();
+            Log.i(TAG, "FastMirror 已缓存 SPS/PPS 配置信息 (" + spsPps.length + " bytes)");
+        }
+    }
+
+    private static boolean containsSps(byte[] data) {
+        if (data == null || data.length < 5) return false;
+        for (int i = 0; i < data.length - 4; i++) {
+            if (data[i] == 0 && data[i + 1] == 0 && ((data[i + 2] == 1 && (data[i + 3] & 0x1F) == 7) ||
+                    (data[i + 2] == 0 && data[i + 3] == 1 && (data[i + 4] & 0x1F) == 7))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void sendVideo(byte[] naluData, boolean isKeyFrame, long ptsUs) {
-        if (clientSockets.isEmpty()) return;
-        byte[] packet = packPacket(MSG_VIDEO_FRAME, naluData);
+        if (clientSockets.isEmpty() || naluData == null || naluData.length == 0) return;
+
+        byte[] payloadToSend = naluData;
+        if (isKeyFrame && cachedSpsPps != null && !containsSps(naluData)) {
+            byte[] combined = new byte[cachedSpsPps.length + naluData.length];
+            System.arraycopy(cachedSpsPps, 0, combined, 0, cachedSpsPps.length);
+            System.arraycopy(naluData, 0, combined, cachedSpsPps.length, naluData.length);
+            payloadToSend = combined;
+        }
+
+        byte[] packet = packPacket(MSG_VIDEO_FRAME, payloadToSend);
         broadcast(packet);
     }
 

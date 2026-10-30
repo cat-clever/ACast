@@ -1,6 +1,20 @@
 # ACast 发版说明
 
-## v0.2.9 更新日志 (最新)
+## v0.3.0 更新日志 (最新)
+
+1. **彻底修复 Android 端 HLS 直播服务与录屏初始化**：
+   * **参数一致性修复**：修复 `MainActivity` 与 `ScreenCaptureService` 传参 key（`code` vs `resultCode`）不匹配导致的录屏未激活 Bug，彻底恢复底层 MediaProjection 与硬件编码器正常流转；
+   * **端口提早预就绪**：将 `LocalHttpTsServer` (8088) 与 `FastMirrorSender` (19999) 提前在应用启动时就绪，彻底避免大屏设备和电脑连入时报 Connection Refused；
+   * **界面流地址展示**：在手机主界面显式标明当前 HLS 直播流地址（`http://<ip>:8088/live.m3u8`），方便即时验证与拉流。
+2. **控制端重磅升级：实时投屏视窗 + 鼠标操控滑动 + 键盘直接输入**：
+   * **专业双分栏视窗**：左侧提供 420x690 超大高保真手机画面视窗，右侧集成设备连接、反控按键与运行日志；
+   * **macOS VideoToolbox 硬件加速极速硬解**：Annex-B 自动转 AVCC，零拷贝 GPU 实时上屏，延迟低于 20ms；
+   * **鼠标点击与顺滑拖拽模拟触控**：鼠标点击、拖拽滑动精准映射为画面归一化坐标实时发给手机，无障碍服务顺滑模拟手势；鼠标右键直接触发手机返回键；
+   * **键盘打字输入与快捷键**：ESC 映射返回、Return 映射回车、Delete 映射退格、方向键精准映射；电脑键盘输入文本直接实时填入手机输入框！
+
+---
+
+## v0.2.9 更新日志
 
 1. **彻底修复 macOS 启动野指针崩溃 (SIGSEGV / EXC_BAD_ACCESS)**：
    * **生命周期安全隔离**：修复 `SetUsbDeviceCallback` 和 `SetDiscoveredPhonesCallback` 闭包直接引用栈内存局部变量导致的非法内存访问；引入 `std::make_shared` 安全堆托管，确保 GCD 异步派发至主线程时数据绝对有效；

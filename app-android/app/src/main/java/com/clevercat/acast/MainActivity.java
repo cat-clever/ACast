@@ -77,6 +77,14 @@ public class MainActivity extends AppCompatActivity {
         // 初始化界面状态
         updateStatusUi();
 
+        // 预先启动本地推流与反控通信端口，随时响应局域网大屏和电脑连接
+        try {
+            LocalHttpTsServer.getInstance().startServer(8088);
+            FastMirrorSender.getInstance().startServer(19999);
+        } catch (Throwable t) {
+            Log.w(TAG, "预启动本地推流端口异常: " + t.getMessage());
+        }
+
         // 启动局域网对等发现服务，自动侦听电脑控制端
         acquireMulticastLock();
         PeerDiscoveryManager.getInstance().start(this, desktops -> runOnUiThread(() -> {
@@ -280,6 +288,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
             serviceIntent.putExtra("code", resultCode);
+            serviceIntent.putExtra("resultCode", resultCode);
             serviceIntent.putExtra("data", data);
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -337,15 +346,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateStatusUi() {
+        String ip = getLocalIpAddress(this);
         if (isCapturing) {
-            String ip = getLocalIpAddress(this);
-            tvStatus.setText("✓ 投屏已开启 (本机IP: " + ip + ")\n请选择下方控制端电脑直连，或点击大屏设备投屏");
+            tvStatus.setText("✓ 投屏进行中 (本机IP: " + ip + ")\n📡 HLS 直播流: http://" + ip + ":8088/live.m3u8\n请选择下方控制端电脑直连，或点击大屏设备投屏");
             tvStatus.setTextColor(0xFF2E7D32); // 绿色
             if (tvDeviceHeader != null) {
                 tvDeviceHeader.setText("3. 选择目标设备 (💻 电脑控制端 / 📺 大屏电视):");
             }
         } else {
-            tvStatus.setText(R.string.status_ready);
+            tvStatus.setText("● 本地推流服务已就绪 (端口 8088 / 19999)\n📡 HLS 地址: http://" + ip + ":8088/live.m3u8\n请点击【开启投屏】开始实时传输屏幕");
             tvStatus.setTextColor(0xFFE65100); // 醒目橙色
             if (tvDeviceHeader != null) {
                 tvDeviceHeader.setText("3. 选择目标设备 (⚠️ 请先完成第1步开启投屏):");

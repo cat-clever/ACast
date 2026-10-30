@@ -9,6 +9,7 @@
 #include <ws2tcpip.h>
 typedef int socklen_t;
 #define CLOSE_SOCKET closesocket
+#define SHUTDOWN_SOCKET(s) shutdown(s, SD_BOTH)
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -17,6 +18,7 @@ typedef int socklen_t;
 #include <unistd.h>
 #include <fcntl.h>
 #define CLOSE_SOCKET close
+#define SHUTDOWN_SOCKET(s) shutdown(s, SHUT_RDWR)
 #endif
 
 namespace acast {
@@ -43,7 +45,7 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
     int nodelay = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
 
-    // 设置超时
+    // 设置接收发送超时
 #if defined(_WIN32)
     DWORD tv = timeout_ms;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
@@ -75,7 +77,7 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
     connected_port_ = port;
     is_connected_ = true;
 
-    // 发送握手请求
+    // 握手包发送
     HandshakeReqPayload req;
     req.client_version = 0x0201;
 #if defined(_WIN32)
@@ -91,14 +93,22 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
     std::memcpy(req.device_name, client_name.c_str(), req.device_name_len);
 
     SendRawPacket(MessageType::HANDSHAKE_REQ, reinterpret_cast<const uint8_t*>(&req), sizeof(req));
+
+    // 启动持续接收后台线程
+    recv_thread_ = std::thread(&FastMirrorClient::ReceiveLoop, this);
+
     return true;
 }
 
 void FastMirrorClient::Disconnect() {
     is_connected_ = false;
     if (socket_fd_ >= 0) {
+        SHUTDOWN_SOCKET(socket_fd_);
         CLOSE_SOCKET(socket_fd_);
         socket_fd_ = -1;
+    }
+    if (recv_thread_.joinable()) {
+        recv_thread_.join();
     }
     connected_ip_.clear();
     connected_port_ = 0;
@@ -114,6 +124,16 @@ std::string FastMirrorClient::GetConnectedIp() const {
 
 uint16_t FastMirrorClient::GetConnectedPort() const {
     return connected_port_;
+}
+
+void FastMirrorClient::SetVideoCallback(VideoFrameCallback cb) {
+    std::lock_guard<std::mutex> lock(cb_mutex_);
+    video_cb_ = std::move(cb);
+}
+
+void FastMirrorClient::SetAudioCallback(AudioFrameCallback cb) {
+    std::lock_guard<std::mutex> lock(cb_mutex_);
+    audio_cb_ = std::move(cb);
 }
 
 bool FastMirrorClient::SendRawPacket(MessageType type, const uint8_t* payload, uint32_t payload_len) {
@@ -145,6 +165,11 @@ bool FastMirrorClient::SendTouch(uint8_t action, uint16_t norm_x, uint16_t norm_
     return SendRawPacket(type, reinterpret_cast<const uint8_t*>(&p), sizeof(p));
 }
 
+bool FastMirrorClient::SendTextInput(const std::string& text) {
+    if (text.empty()) return true;
+    return SendRawPacket(MessageType::TEXT_INPUT, reinterpret_cast<const uint8_t*>(text.data()), (uint32_t)text.size());
+}
+
 bool FastMirrorClient::SendKey(uint16_t key_code, uint8_t action) {
     KeyPayload p;
     p.key_code = htons(key_code);
@@ -166,6 +191,92 @@ bool FastMirrorClient::SendRecents() {
 
 bool FastMirrorClient::SendPing() {
     return SendRawPacket(MessageType::PING, nullptr, 0);
+}
+
+void FastMirrorClient::ReceiveLoop() {
+    uint8_t header_buf[16];
+    while (is_connected_ && socket_fd_ >= 0) {
+        // 读取 16 字节头部
+        size_t recvd = 0;
+        bool read_ok = true;
+        while (recvd < 16) {
+            int n = recv(socket_fd_, reinterpret_cast<char*>(header_buf + recvd), 16 - recvd, 0);
+            if (n <= 0) {
+                read_ok = false;
+                break;
+            }
+            recvd += n;
+        }
+        if (!read_ok || !is_connected_) break;
+
+        uint16_t magic = (static_cast<uint16_t>(header_buf[0]) << 8) | header_buf[1];
+        if (magic != MAGIC_NUMBER) {
+            continue;
+        }
+
+        uint8_t msg_type = header_buf[2];
+        uint32_t payload_len = (static_cast<uint32_t>(header_buf[4]) << 24) |
+                               (static_cast<uint32_t>(header_buf[5]) << 16) |
+                               (static_cast<uint32_t>(header_buf[6]) << 8)  |
+                               (static_cast<uint32_t>(header_buf[7]));
+        int64_t pts_us = 0;
+        for (int i = 0; i < 8; ++i) {
+            pts_us = (pts_us << 8) | header_buf[8 + i];
+        }
+
+        std::vector<uint8_t> payload;
+        if (payload_len > 0) {
+            if (payload_len > 20 * 1024 * 1024) {
+                break; // 异常超大包保护
+            }
+            payload.resize(payload_len);
+            size_t p_recvd = 0;
+            while (p_recvd < payload_len) {
+                int n = recv(socket_fd_, reinterpret_cast<char*>(payload.data() + p_recvd), payload_len - p_recvd, 0);
+                if (n <= 0) {
+                    read_ok = false;
+                    break;
+                }
+                p_recvd += n;
+            }
+            if (!read_ok || !is_connected_) break;
+        }
+
+        // 处理接收到的消息包
+        if (msg_type == static_cast<uint8_t>(MessageType::VIDEO_FRAME)) {
+            bool is_key = false;
+            // 扫描判断是否含有关键帧 SPS(7) 或 IDR(5)
+            for (size_t i = 0; i + 4 < payload.size(); ++i) {
+                if (payload[i] == 0 && payload[i+1] == 0 &&
+                    ((payload[i+2] == 1 && ((payload[i+3] & 0x1F) == 5 || (payload[i+3] & 0x1F) == 7)) ||
+                     (payload[i+2] == 0 && payload[i+3] == 1 && ((payload[i+4] & 0x1F) == 5 || (payload[i+4] & 0x1F) == 7)))) {
+                    is_key = true;
+                    break;
+                }
+            }
+
+            VideoFrameCallback cb;
+            {
+                std::lock_guard<std::mutex> lock(cb_mutex_);
+                cb = video_cb_;
+            }
+            if (cb) {
+                cb(payload.data(), payload.size(), is_key, pts_us);
+            }
+        } else if (msg_type == static_cast<uint8_t>(MessageType::AUDIO_FRAME)) {
+            AudioFrameCallback cb;
+            {
+                std::lock_guard<std::mutex> lock(cb_mutex_);
+                cb = audio_cb_;
+            }
+            if (cb) {
+                cb(payload.data(), payload.size());
+            }
+        } else if (msg_type == static_cast<uint8_t>(MessageType::PING)) {
+            SendRawPacket(MessageType::PONG, nullptr, 0);
+        }
+    }
+    is_connected_ = false;
 }
 
 } // namespace fastmirror

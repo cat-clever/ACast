@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(acast_desktop VERSION 0.2.9 LANGUAGES CXX)
+project(acast_desktop VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,8 +51,8 @@ if(APPLE)
         MACOSX_BUNDLE_ICON_FILE "acast.icns"
         MACOSX_BUNDLE_BUNDLE_NAME "ACast"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.catclever.acast"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.2.9"
-        MACOSX_BUNDLE_BUNDLE_VERSION "0.2.9"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.3.0"
+        MACOSX_BUNDLE_BUNDLE_VERSION "0.3.0"
     )
 
     set_source_files_properties(
@@ -62,5 +62,11 @@ if(APPLE)
     )
 
     target_compile_options(acast_desktop PRIVATE "-fobjc-arc")
-    target_link_libraries(acast_desktop PRIVATE "-framework Cocoa")
+    target_link_libraries(acast_desktop PRIVATE
+        "-framework Cocoa"
+        "-framework VideoToolbox"
+        "-framework CoreVideo"
+        "-framework CoreMedia"
+        "-framework AVFoundation"
+    )
 endif()

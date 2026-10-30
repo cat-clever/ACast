@@ -283,6 +283,50 @@ std::string DesktopController::GetWifiPhoneAddress() const {
     return fastmirror_client_->GetConnectedIp() + ":" + std::to_string(fastmirror_client_->GetConnectedPort());
 }
 
+void DesktopController::SetVideoCallback(VideoFrameCallback cb) {
+    if (fastmirror_client_) {
+        fastmirror_client_->SetVideoCallback(cb);
+    }
+}
+
+bool DesktopController::SendTouch(uint8_t action, uint16_t norm_x, uint16_t norm_y) {
+    if (fastmirror_client_ && fastmirror_client_->IsConnected()) {
+        return fastmirror_client_->SendTouch(action, norm_x, norm_y);
+    }
+    // 备用 USB ADB 通道
+    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
+    if (!devs.empty()) {
+        int x = (int)(norm_x * 1080 / 10000);
+        int y = (int)(norm_y * 1920 / 10000);
+        if (action == 0 || action == 2) {
+            return acast::adb::AdbTunnel::InjectTap(devs[0].serial, x, y);
+        }
+    }
+    return false;
+}
+
+bool DesktopController::SendTextInput(const std::string& text) {
+    if (fastmirror_client_ && fastmirror_client_->IsConnected()) {
+        return fastmirror_client_->SendTextInput(text);
+    }
+    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
+    if (!devs.empty()) {
+        return acast::adb::AdbTunnel::InjectText(devs[0].serial, text);
+    }
+    return false;
+}
+
+bool DesktopController::SendKey(uint16_t key_code) {
+    if (fastmirror_client_ && fastmirror_client_->IsConnected()) {
+        return fastmirror_client_->SendKey(key_code);
+    }
+    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
+    if (!devs.empty()) {
+        return acast::adb::AdbTunnel::InjectKeyEvent(devs[0].serial, (int)key_code);
+    }
+    return false;
+}
+
 bool DesktopController::SendBackKey() {
     // 1. 优先局域网 Wi-Fi 直连私有协议通道
     if (fastmirror_client_ && fastmirror_client_->IsConnected()) {

@@ -88,17 +88,21 @@ public class LocalHttpTsServer {
         }
     }
 
-    public void startServer(int port) {
-        if (isRunning) return;
+    public synchronized void startServer(int port) {
+        if (isRunning && serverSocket != null && !serverSocket.isClosed()) return;
         isRunning = true;
 
         new Thread(() -> {
             try {
-                serverSocket = new ServerSocket(port);
+                if (serverSocket != null && !serverSocket.isClosed()) {
+                    try { serverSocket.close(); } catch (Throwable ignored) {}
+                }
+                serverSocket = new ServerSocket();
                 serverSocket.setReuseAddress(true);
+                serverSocket.bind(new java.net.InetSocketAddress(port));
                 Log.i(TAG, "本地 HTTP HLS/MPEG-TS 实时推流服务已启动，监听端口: " + port);
 
-                while (isRunning) {
+                while (isRunning && !serverSocket.isClosed()) {
                     Socket client = serverSocket.accept();
                     client.setTcpNoDelay(true);
                     client.setSendBufferSize(256 * 1024);
@@ -109,8 +113,20 @@ public class LocalHttpTsServer {
                 if (isRunning) {
                     Log.w(TAG, "MPEG-TS 监听循环退出: " + e.getMessage());
                 }
+            } finally {
+                isRunning = false;
             }
         }, "TsServerAcceptor").start();
+    }
+
+    public synchronized void stopServer() {
+        isRunning = false;
+        try {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+        } catch (Throwable ignored) {}
+        serverSocket = null;
     }
 
     private void handleHttpClient(Socket client) {

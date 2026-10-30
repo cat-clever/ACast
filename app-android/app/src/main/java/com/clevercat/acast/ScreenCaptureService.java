@@ -93,7 +93,7 @@ public class ScreenCaptureService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null) {
-            int resultCode = intent.getIntExtra("resultCode", 0);
+            int resultCode = intent.getIntExtra("resultCode", intent.getIntExtra("code", 0));
             Intent data = intent.getParcelableExtra("data");
             if (resultCode != 0 && data != null) {
                 MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
@@ -101,6 +101,7 @@ public class ScreenCaptureService extends Service {
                     try {
                         mediaProjection = manager.getMediaProjection(resultCode, data);
                         if (mediaProjection != null) {
+                            Log.i(TAG, "成功获取 MediaProjection 权限，开始启动硬件编码器...");
                             startEncoding();
                         } else {
                             Log.e(TAG, "获取 mediaProjection 结果为空！");
@@ -109,6 +110,8 @@ public class ScreenCaptureService extends Service {
                         Log.e(TAG, "获取 MediaProjection 失败: " + t.getMessage(), t);
                     }
                 }
+            } else {
+                Log.w(TAG, "onStartCommand 未获取到有效的 resultCode 或 data! resultCode=" + resultCode + ", data=" + data);
             }
         }
         return START_NOT_STICKY;
@@ -243,8 +246,9 @@ public class ScreenCaptureService extends Service {
                         outputBuffer.get(outData);
 
                         if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                            // 捕获编码器初始化的 SPS / PPS 配置信息
+                            // 捕获编码器初始化的 SPS / PPS 配置信息并同步给 HLS 与 FastMirror
                             LocalHttpTsServer.getInstance().setSpsPps(outData);
+                            FastMirrorSender.getInstance().setSpsPps(outData);
                         } else {
                             boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
 

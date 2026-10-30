@@ -19,6 +19,7 @@ using TvDeviceCallback = std::function<void(std::vector<acast::dlna::DlnaDevice>
 using UsbDeviceCallback = std::function<void(std::vector<acast::adb::AdbDevice>)>;
 using FastMirrorCallback = std::function<void(bool connected, std::string address)>;
 using DiscoveredPhonesCallback = std::function<void(std::vector<acast::discovery::DiscoveredPhone>)>;
+using VideoFrameCallback = std::function<void(const uint8_t* data, size_t size, bool is_key, int64_t pts_us)>;
 using UpdateCallback = std::function<void(acast::updater::UpdateInfo)>;
 using ProgressCallback = std::function<void(std::string, int)>;
 
@@ -41,6 +42,7 @@ public:
     // 局域网 Wi-Fi 手机私有协议直连反控与自发现
     void SetFastMirrorCallback(FastMirrorCallback cb);
     void SetDiscoveredPhonesCallback(DiscoveredPhonesCallback cb);
+    void SetVideoCallback(VideoFrameCallback cb);
     void RefreshPhones();
     std::vector<acast::discovery::DiscoveredPhone> GetDiscoveredPhones();
     void ConnectWifiPhone(const std::string& ip, uint16_t port = 19999);
@@ -53,7 +55,10 @@ public:
     void RefreshUsbDevices();
     std::vector<acast::adb::AdbDevice> GetUsbDevices();
 
-    // 综合反向控制动作 (优先局域网 FastMirror 私有协议通道，其次 ADB USB 通道)
+    // 触控与文本、按键综合反向控制 (优先局域网 FastMirror 私有协议通道，其次 ADB USB 通道)
+    bool SendTouch(uint8_t action, uint16_t norm_x, uint16_t norm_y);
+    bool SendTextInput(const std::string& text);
+    bool SendKey(uint16_t key_code);
     bool SendBackKey();
     bool SendHomeKey();
     bool SendRecentsKey();
