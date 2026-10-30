@@ -312,8 +312,8 @@ public class DlnaSender {
                 } catch (Throwable ignored) {}
 
                 // 标准 UPnP / DLNA AVTransport SOAP 投送
-                // 构造标准 DIDL-Lite 元数据，自动识别 HLS (m3u8) 或 MPEG-TS 格式并注入 DLNA.ORG_OP=01 直播流特性
-                boolean isHls = mediaUrl != null && mediaUrl.contains(".m3u8");
+                // 构造标准 DIDL-Lite 元数据，自动识别 HLS (/live 或 .m3u8) 或 MPEG-TS 格式并注入 DLNA.ORG_OP=01 直播流特性
+                boolean isHls = mediaUrl != null && (mediaUrl.contains(".m3u8") || mediaUrl.contains("live"));
                 String mimeType = isHls ? "application/vnd.apple.mpegurl" : "video/mp2t";
                 String didlXml =
                         "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">" +

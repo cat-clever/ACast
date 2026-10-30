@@ -173,19 +173,19 @@ public class LocalHttpTsServer {
                 return;
             }
 
-            // HLS 播放列表请求
-            if (path.contains(".m3u8")) {
+            // 1. HLS 播放列表请求 (同时支持 /live 与 /live.m3u8)
+            if (path.contains(".m3u8") || path.equals("/live") || path.startsWith("/live?") || path.endsWith("/live")) {
                 handleM3u8Request(client, method, out);
                 return;
             }
 
-            // HLS 分片请求
-            if (path.contains("segment-") && path.endsWith(".ts")) {
+            // 2. HLS 分片请求
+            if (path.contains("segment-") && (path.endsWith(".ts") || path.contains(".ts?"))) {
                 handleSegmentRequest(client, method, path, out);
                 return;
             }
 
-            // 兜底长连接流 (/live.ts)
+            // 3. 兜底长连接流 (/live.ts)
             handleLiveTsLongPoll(client, method, out);
 
         } catch (Throwable t) {
@@ -195,7 +195,7 @@ public class LocalHttpTsServer {
     }
 
     /**
-     * 处理 live.m3u8 实时直播播放列表请求
+     * 处理 live / live.m3u8 实时直播播放列表请求
      */
     private void handleM3u8Request(Socket client, String method, OutputStream out) {
         try {
@@ -203,17 +203,21 @@ public class LocalHttpTsServer {
                 if (hlsSegments.isEmpty() && isRunning) {
                     ScreenCaptureService.requestKeyFrame();
                     try {
-                        hlsLock.wait(1200);
+                        hlsLock.wait(800);
                     } catch (InterruptedException ignored) {}
                 }
-                // 兜底：如果等待后分片仍为空但已有当前首屏帧数据，立即切出首个分片
+                // 兜底1：如果等待后已有当前首屏帧数据，立即切出首个分片
                 if (hlsSegments.isEmpty() && currentSegmentBuffer.size() > 0) {
-                    long durationUs = Math.max(500_000L, currentSegmentLastPtsUs - currentSegmentStartPtsUs);
+                    long durationUs = Math.max(300_000L, currentSegmentLastPtsUs - currentSegmentStartPtsUs);
                     double durSec = Math.max(0.3, durationUs / 1_000_000.0);
                     byte[] segData = currentSegmentBuffer.toByteArray();
                     hlsSegments.add(new HlsSegment(segmentSequenceCounter++, durSec, segData));
                     currentSegmentBuffer.reset();
                     currentSegmentStartPtsUs = -1;
+                }
+                // 兜底2：若仍为空（录屏尚未开始推流），注入合规待命首片，杜绝播放器因清单为空报 Playback Stopped
+                if (hlsSegments.isEmpty()) {
+                    ensureStandbySegmentLocked();
                 }
             }
 
@@ -238,6 +242,19 @@ public class LocalHttpTsServer {
         } finally {
             try { client.close(); } catch (Throwable ignored) {}
         }
+    }
+
+    private void ensureStandbySegmentLocked() {
+        if (!hlsSegments.isEmpty()) return;
+        ByteArrayOutputStream baos = new ByteArrayOutputStream(188 * 3);
+        byte[] pat = generatePat();
+        byte[] pmt = generatePmt();
+        byte[] pcr = generatePcrPacket();
+        baos.write(pat, 0, 188);
+        baos.write(pmt, 0, 188);
+        baos.write(pcr, 0, 188);
+        hlsSegments.add(new HlsSegment(segmentSequenceCounter++, 1.0, baos.toByteArray()));
+    }
     }
 
     /**
@@ -526,7 +543,7 @@ public class LocalHttpTsServer {
                 // 如果当前分片已有数据，且达到切片门限（>= 800ms 或 >= 300KB），进行切片封包
                 if (currentSegmentStartPtsUs > 0 && currentSegmentBuffer.size() > 0) {
                     long durationUs = ptsUs - currentSegmentStartPtsUs;
-                    if (durationUs >= 800_000L || currentSegmentBuffer.size() >= 300 * 1024) {
+                    if (durationUs >= 400_000L || currentSegmentBuffer.size() >= 100 * 1024) {
                         double durSec = Math.max(0.3, durationUs / 1_000_000.0);
                         byte[] segData = currentSegmentBuffer.toByteArray();
                         hlsSegments.add(new HlsSegment(segmentSequenceCounter++, durSec, segData));

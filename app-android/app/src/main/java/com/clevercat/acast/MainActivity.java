@@ -339,7 +339,7 @@ public class MainActivity extends AppCompatActivity {
             controlUrl = deviceItem.substring(arrowIdx + 4).trim();
         }
         String myIp = getLocalIpAddress(this);
-        String streamUrl = "http://" + myIp + ":8088/live.m3u8";
+        String streamUrl = "http://" + myIp + ":8088/live";
         DlnaSender.playMediaOnTv(deviceName, controlUrl, streamUrl);
         Toast.makeText(this, "已发起投屏至【" + deviceName + "】！", Toast.LENGTH_SHORT).show();
         tvStatus.setText("✓ 正在向【" + deviceName + "】投屏中 (实时音画传输中)");
@@ -348,13 +348,13 @@ public class MainActivity extends AppCompatActivity {
     private void updateStatusUi() {
         String ip = getLocalIpAddress(this);
         if (isCapturing) {
-            tvStatus.setText("✓ 投屏进行中 (本机IP: " + ip + ")\n📡 HLS 直播流: http://" + ip + ":8088/live.m3u8\n请选择下方控制端电脑直连，或点击大屏设备投屏");
+            tvStatus.setText("✓ 投屏进行中 (本机IP: " + ip + ")\n📡 实时直播流: http://" + ip + ":8088/live\n请选择下方控制端电脑直连，或点击大屏设备投屏");
             tvStatus.setTextColor(0xFF2E7D32); // 绿色
             if (tvDeviceHeader != null) {
                 tvDeviceHeader.setText("3. 选择目标设备 (💻 电脑控制端 / 📺 大屏电视):");
             }
         } else {
-            tvStatus.setText("● 本地推流服务已就绪 (端口 8088 / 19999)\n📡 HLS 地址: http://" + ip + ":8088/live.m3u8\n请点击【开启投屏】开始实时传输屏幕");
+            tvStatus.setText("● 本地推流服务已就绪 (端口 8088 / 19999)\n📡 直播流地址: http://" + ip + ":8088/live\n请点击【开启投屏】开始实时传输屏幕");
             tvStatus.setTextColor(0xFFE65100); // 醒目橙色
             if (tvDeviceHeader != null) {
                 tvDeviceHeader.setText("3. 选择目标设备 (⚠️ 请先完成第1步开启投屏):");

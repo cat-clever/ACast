@@ -1,6 +1,16 @@
 # ACast 发版说明
 
-## v0.3.0 更新日志 (最新)
+## v0.3.1 更新日志 (最新)
+
+1. **彻底解决 ADisplay / 电视大屏投屏中断 (Playback Stopped)**：
+   * **深入源码排查**：分析 ADisplay 源码发现其 `MediaRelay` 换封装模块会将含 `.m3u8` 的流误判为点播（VOD），强加 `#EXT-X-ENDLIST` 导致播完 4 秒直接中断；
+   * **直通直播流端点 `/live`**：推流地址升级为 `http://<ip>:8088/live`，彻底绕开 ADisplay 点播换封装的错误拦截，直通系统 AVPlayer / ExoPlayer 原生直播流；
+   * **首帧保底分片机制**：启动时预初始化合规待命分片，确保清单永远有合法有效分片，杜绝播放器因解析到空列表直接失败；
+   * **AirPlay 报错解密**：揭秘 ADisplay 底层 UxPlay 在 `POST /play` 时硬编码只认 YouTube 二进制 plist 的限制，强化稳定性更强的 DLNA 直连通道。
+
+---
+
+## v0.3.0 更新日志
 
 1. **彻底修复 Android 端 HLS 直播服务与录屏初始化**：
    * **参数一致性修复**：修复 `MainActivity` 与 `ScreenCaptureService` 传参 key（`code` vs `resultCode`）不匹配导致的录屏未激活 Bug，彻底恢复底层 MediaProjection 与硬件编码器正常流转；
