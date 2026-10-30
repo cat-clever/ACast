@@ -36,6 +36,13 @@
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:text="@string/btn_scan_dlna"
+        android:layout_marginBottom="12dp" />
+
+    <Button
+        android:id="@+id/btn_check_update"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:text="检查并直接在线更新"
         android:layout_marginBottom="24dp" />
 
     <TextView

@@ -22,6 +22,10 @@
   - **反向操控手机**：在电脑上用鼠标点击、滑动、拖拽、滚轮，键盘按键打字，完整反向操控手机。
   - **Android (Android 7+) 控制**：基于 USB / 无线 ADB 原生隧道直接注入触控与按键，免 Root，零延迟；支持无障碍服务。
   - **iOS (iOS 16+) 控制**：采用行业标准蓝牙 HID 模拟结合 iPhone“辅助触控（AssistiveTouch）”，免越狱实现鼠标操控。
+- ⚡ **全平台直接在线热更新 (In-App Auto-Update)**：
+  - **macOS**：后台自动静默挂载 DMG，原子覆盖 `/Applications/ACast.app` 并自启，彻底免除手动下载拖拽 DMG。
+  - **Windows**：自动静默拉取 ZIP 解压，守护进程突破文件句柄锁热替换 `.exe`，免除手动解压覆盖。
+  - **Android**：应用内一键下载更新，通过 `FileProvider` 调起原生包安装器直接升级。
 - 🚀 **100% 纯云端 GitHub Actions 矩阵编译**：
   - 云端自动打包输出：`Android APK`、`iOS App`、`Windows x64 (.zip)`、`Windows ARM64 (.zip)`、`macOS Universal (.dmg)` 5 大产物。
 

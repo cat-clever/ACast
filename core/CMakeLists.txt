@@ -11,6 +11,7 @@ set(CORE_SOURCES
     src/dlna_controller.cpp
     src/http_ts_server.cpp
     src/adb_tunnel.cpp
+    src/auto_updater.cpp
 )
 
 set(CORE_HEADERS
@@ -18,6 +19,7 @@ set(CORE_HEADERS
     include/dlna_controller.h
     include/http_ts_server.h
     include/adb_tunnel.h
+    include/auto_updater.h
 )
 
 add_library(acast_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})

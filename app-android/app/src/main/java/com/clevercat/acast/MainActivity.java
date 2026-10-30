@@ -24,6 +24,7 @@ public class MainActivity extends AppCompatActivity {
 
     private Button btnToggleCapture;
     private Button btnScanTv;
+    private Button btnCheckUpdate;
     private TextView tvStatus;
     private ListView lvDevices;
 
@@ -39,11 +40,17 @@ public class MainActivity extends AppCompatActivity {
 
         btnToggleCapture = findViewById(R.id.btn_toggle_capture);
         btnScanTv = findViewById(R.id.btn_scan_tv);
+        btnCheckUpdate = findViewById(R.id.btn_check_update);
         tvStatus = findViewById(R.id.tv_status);
         lvDevices = findViewById(R.id.lv_devices);
 
         deviceAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, deviceList);
         lvDevices.setAdapter(deviceAdapter);
+
+        // 在线直接自动更新
+        btnCheckUpdate.setOnClickListener(v -> performUpdateCheck(true));
+        // 启动时后台静默检查
+        performUpdateCheck(false);
 
         // 允许组播接收 SSDP 广播
         WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -118,6 +125,48 @@ public class MainActivity extends AppCompatActivity {
         isCapturing = false;
         btnToggleCapture.setText(R.string.btn_start_capture);
         tvStatus.setText(R.string.status_ready);
+    }
+
+    private void performUpdateCheck(boolean userTriggered) {
+        if (userTriggered) {
+            Toast.makeText(this, "正在检查最新版本...", Toast.LENGTH_SHORT).show();
+        }
+        AutoUpdater.checkUpdate(this, new AutoUpdater.UpdateCallback() {
+            @Override
+            public void onCheckResult(boolean hasUpdate, String latestVersion, String downloadUrl) {
+                runOnUiThread(() -> {
+                    if (hasUpdate) {
+                        Toast.makeText(MainActivity.this, "发现新版本 " + latestVersion + "，正在后台直接下载更新...", Toast.LENGTH_LONG).show();
+                        AutoUpdater.downloadAndInstall(MainActivity.this, downloadUrl, new AutoUpdater.UpdateCallback() {
+                            @Override
+                            public void onCheckResult(boolean h, String v, String d) {}
+
+                            @Override
+                            public void onDownloadProgress(int progress, String message) {
+                                runOnUiThread(() -> tvStatus.setText("【更新中】" + message));
+                            }
+
+                            @Override
+                            public void onError(String error) {
+                                runOnUiThread(() -> Toast.makeText(MainActivity.this, error, Toast.LENGTH_SHORT).show());
+                            }
+                        });
+                    } else if (userTriggered) {
+                        Toast.makeText(MainActivity.this, "当前已是最新版本！", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+
+            @Override
+            public void onDownloadProgress(int progress, String message) {}
+
+            @Override
+            public void onError(String error) {
+                if (userTriggered) {
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, error, Toast.LENGTH_SHORT).show());
+                }
+            }
+        });
     }
 
     @Override
