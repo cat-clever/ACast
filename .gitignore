@@ -1,0 +1,40 @@
+# Build and intermediate directories
+build/
+bin/
+lib/
+out/
+dist/
+artifacts/
+
+# Visual Studio / MSVC
+.vs/
+*.user
+*.suo
+x64/
+ARM64/
+Debug/
+Release/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# Gradle / Android
+.gradle/
+app-android/.gradle/
+app-android/build/
+app-android/app/build/
+local.properties
+*.apk
+*.aab
+
+# IDEs
+.idea/
+*.iml
+.vscode/

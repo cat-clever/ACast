@@ -1,0 +1,57 @@
+name: 发布 Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已存在的 tag 名（如 v0.1.0）
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: 汇总全架构产物并发布 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 清点产物清单
+        run: |
+          set -euo pipefail
+          find artifacts -type f -printf '%s\t%p\n' | sort -k2
+
+          for expected in \
+            acast-windows-x64.zip \
+            acast-windows-arm64.zip \
+            acast-macos-universal.dmg \
+            acast-android.apk \
+            acast-ios.zip
+          do
+            if [ ! -f "artifacts/${expected}" ]; then
+              echo "缺少产物：${expected}" >&2
+              exit 1
+            fi
+          done
+          echo "全平台全架构 5 大产物已全部就绪！"
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          body_path: docs/发布说明.md
