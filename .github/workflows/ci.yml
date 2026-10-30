@@ -1,6 +1,4 @@
-name: 构建与测试
-
-run-name: 构建与测试 · ${{ inputs.title || github.event.pull_request.title || github.ref_name }}
+name: CI 构建与测试
 
 on:
   push:
@@ -8,11 +6,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      title:
-        description: 这次改动的内容
-        required: false
-        type: string
   workflow_call:
 
 concurrency:

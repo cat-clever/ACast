@@ -6,8 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 已存在的 tag 名（如 v0.1.0）
+        description: '已存在的 tag 名（如 v0.1.0）'
         required: true
+        type: string
 
 permissions:
   contents: write
@@ -54,4 +55,4 @@ jobs:
           files: artifacts/*
           generate_release_notes: false
           fail_on_unmatched_files: true
-          body_path: docs/发布说明.md
+          body_path: docs/RELEASE_NOTES.md

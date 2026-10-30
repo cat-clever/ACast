@@ -1,0 +1,36 @@
+# ACast v0.1.0 发版说明
+
+跨平台主动投屏与反向控制客户端（支持 B站/DLNA 电视投屏 & Windows/macOS 极低延迟 USB/Wi-Fi 音画反控）。
+
+## 核心特性与支持范围
+
+### 1. 电视大屏免装软件投屏（B站 / DLNA 协议体系）
+*   **对标 B 站 / 爱奇艺机制**：局域网内任意智能电视、电视盒子（小米、华为、海信、创维、天猫魔盒等）**无需安装任何接收端软件**，即搜即投。
+*   **双模式支持**：
+    *   **手机实时屏幕镜像**：通过本地微内核 HTTP-TS 实时流，将手机屏幕与声音以极低延迟（80~150ms）推送到电视全屏播放；
+    *   **在线/本地流媒体投送**：直接将视频流 URL 投送给电视原生播放器，手机可息屏，支持暂停与进度调节。
+
+### 2. 桌面端极低延迟 & 鼠标键盘反向操控手机（自研 FastMirror 协议体系）
+*   **Windows (x86_64 与 ARM64 双架构)** & **macOS (Universal 2: Apple Silicon + Intel)** 原生支持。
+*   **USB 数据线直连**：极高带宽、零无线干扰、端到端时延 **15~35ms**，即插即用。
+*   **局域网 Wi-Fi 直连**：同一局域网自动发现，时延 30~50ms。
+*   **反向操控手机**：在电脑窗口中使用鼠标点击、滑动、拖拽、滚轮，键盘按键打字，完整反向控制手机。
+    *   Android 7+：基于 USB / 无线 ADB 原生隧道直接注入事件，免 Root，零延迟；同时支持系统无障碍服务模式。
+    *   iOS 16+：支持标准蓝牙 HID 模拟与 iPhone 辅助触控（AssistiveTouch）。
+
+### 3. 音频捕获全版本适配
+*   **Android 10+**：启用官方 `AudioPlaybackCapture` 进行免 Root 纯净系统音频捕获。
+*   **Android 7~9**：启用麦克风外录降级兼容，保证低版本免 Root 正常出声。
+*   **iOS 16+**：采用 ReplayKit 2 广播扩展捕获系统音频样本。
+
+---
+
+## 各平台安装包清单
+
+| 文件名 | 适用平台与架构 | 说明 |
+| :--- | :--- | :--- |
+| `acast-windows-x64.zip` | Windows 10/11 (Intel / AMD 64位) | 解压即用，插 USB 数据线即可反控 Android 手机 |
+| `acast-windows-arm64.zip` | Windows 11 on ARM (骁龙 X Elite / Surface ARM) | 原生 ARM64 指令集，无模拟损耗 |
+| `acast-macos-universal.dmg` | macOS 12+ (Apple Silicon M1~M4 & Intel Mac) | Universal 2 统一架构安装包 |
+| `acast-android.apk` | Android 7.0 及以上手机 (通用 APK) | 手机安装，开启屏幕投屏与电视搜索 |
+| `acast-ios.zip` | iPhone (iOS 16.0 及以上) | 包含 ReplayKit 2 广播上传扩展 |
