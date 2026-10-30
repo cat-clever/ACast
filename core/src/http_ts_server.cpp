@@ -189,8 +189,8 @@ std::vector<uint8_t> HttpTsServer::GeneratePmt() {
     packet[24] = TS_PID_AUDIO & 0xFF;
     packet[25] = 0xF0; packet[26] = 0x00;
 
-    // CRC32 dummy
-    packet[27] = 0x45; packet[28] = 0xBD; packet[29] = 0xDC; packet[30] = 0xF4;
+    // MPEG-2 CRC32 (Table ID 0x02 to ES info)
+    packet[27] = 0x2F; packet[28] = 0x44; packet[29] = 0xB9; packet[30] = 0x9B;
     return packet;
 }
 

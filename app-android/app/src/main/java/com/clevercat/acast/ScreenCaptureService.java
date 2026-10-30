@@ -220,12 +220,17 @@ public class ScreenCaptureService extends Service {
                         byte[] outData = new byte[bufferInfo.size];
                         outputBuffer.get(outData);
 
-                        boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                        if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            // 捕获编码器初始化的 SPS / PPS 配置信息
+                            LocalHttpTsServer.getInstance().setSpsPps(outData);
+                        } else {
+                            boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
 
-                        // 分发至自研 FastMirror 极速反控通道
-                        FastMirrorSender.getInstance().sendVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
-                        // 分发至 DLNA 实时 TS 流
-                        LocalHttpTsServer.getInstance().pushVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
+                            // 分发至自研 FastMirror 极速反控通道
+                            FastMirrorSender.getInstance().sendVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
+                            // 分发至 DLNA 实时 TS 流
+                            LocalHttpTsServer.getInstance().pushVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
+                        }
                     }
                     videoCodec.releaseOutputBuffer(outputBufferIndex, false);
                 }

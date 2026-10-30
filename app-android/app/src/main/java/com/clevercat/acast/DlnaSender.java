@@ -277,6 +277,17 @@ public class DlnaSender {
                 }
 
                 // 标准 UPnP / DLNA AVTransport SOAP 投送
+                // 构造标准 DIDL-Lite 元数据，显式指定 video/mp2t 协议信息，帮助大屏瞬间锁定解码管线
+                String didlXml =
+                        "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">" +
+                        "<item id=\"0\" parentID=\"-1\" restricted=\"1\">" +
+                        "<dc:title>ACast 实时投屏</dc:title>" +
+                        "<upnp:class>object.item.videoItem</upnp:class>" +
+                        "<res protocolInfo=\"http-get:*:video/mp2t:*\">" + mediaUrl + "</res>" +
+                        "</item>" +
+                        "</DIDL-Lite>";
+                String escapedDidl = didlXml.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+
                 String soapBody =
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
                         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\n" +
@@ -284,7 +295,7 @@ public class DlnaSender {
                         "    <u:SetAVTransportURI xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\n" +
                         "      <InstanceID>0</InstanceID>\n" +
                         "      <CurrentURI>" + mediaUrl + "</CurrentURI>\n" +
-                        "      <CurrentURIMetaData></CurrentURIMetaData>\n" +
+                        "      <CurrentURIMetaData>" + escapedDidl + "</CurrentURIMetaData>\n" +
                         "    </u:SetAVTransportURI>\n" +
                         "  </s:Body>\n" +
                         "</s:Envelope>";
