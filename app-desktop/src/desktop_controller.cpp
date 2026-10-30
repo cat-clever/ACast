@@ -292,7 +292,7 @@ bool DesktopController::SendRecentsKey() {
     std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
     if (!devs.empty()) {
         Log("[USB ADB 反控] 触发多任务键 (KEYCODE_APP_SWITCH)...");
-        return acast::adb::AdbTunnel::InjectKey(devs[0].serial, 187); // KEYCODE_APP_SWITCH
+        return acast::adb::AdbTunnel::InjectAppSwitch(devs[0].serial);
     }
 
     Log("[反控] 尚未连接手机！请通过局域网 IP 直连或插入 USB 数据线。");

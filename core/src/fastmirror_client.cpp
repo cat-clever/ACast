@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <chrono>
+#include <algorithm>
 
 #if defined(_WIN32)
 #include <winsock2.h>
