@@ -50,10 +50,15 @@ jobs:
           done
           echo "全平台全架构 5 大产物已全部就绪！"
 
-      - name: 发布 GitHub Release
+      - name: 提取当前版本的发版说明
+        run: |
+          TAG_NAME="${{ github.event.inputs.tag || github.ref_name }}"
+          python3 scripts/extract_release_notes.py "${TAG_NAME}"
+
+      - name: 发布 GitHub Release (仅包含当前版本说明)
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
           generate_release_notes: false
           fail_on_unmatched_files: true
-          body_path: docs/RELEASE_NOTES.md
+          body_path: current_release_body.md
