@@ -111,9 +111,9 @@ jobs:
               <key>CFBundleDisplayName</key>
               <string>ACast</string>
               <key>CFBundleVersion</key>
-              <string>0.1.5</string>
+              <string>0.1.6</string>
               <key>CFBundleShortVersionString</key>
-              <string>0.1.5</string>
+              <string>0.1.6</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleSignature</key>
@@ -176,6 +176,10 @@ jobs:
           fi
           cp "${APK_PATH}" acast-android.apk
           echo "APK 文件大小: $(ls -lh acast-android.apk)"
+
+      - name: 验证 APK 签名有效性与证书指纹
+        run: |
+          $ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose --print-certs acast-android.apk
 
       - name: 上传 Android APK 产物
         uses: actions/upload-artifact@v4

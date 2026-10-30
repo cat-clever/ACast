@@ -10,18 +10,32 @@ android {
         applicationId "com.clevercat.acast"
         minSdk 24
         targetSdk 34
-        versionCode 5
-        versionName "0.1.5"
+        versionCode 6
+        versionName "0.1.6"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('acast-release.jks')
+            storePassword 'acast123456'
+            keyAlias 'acast'
+            keyPassword 'acast123456'
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // 为方便自测，Debug 签名配置给 Release，免去外部密钥配置
-            signingConfig signingConfigs.debug
+            // 使用固定的项目统一 Release 签名，确保每次云端与本地构建出的 APK 签名完全一致
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
         }
     }
     compileOptions {

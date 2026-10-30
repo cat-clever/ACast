@@ -1,6 +1,16 @@
 # ACast 发版说明
 
-## v0.1.5 更新日志 (最新)
+## v0.1.6 更新日志 (最新)
+
+1. **集成项目持久统一签名，彻底解决 Android APK 签名不一致问题**：
+   * 将统一的 Release 签名密钥文件 `acast-release.jks`（有效至 2054 年）固化到项目中；
+   * 在 `build.gradle` 中统一配置并强制绑定到 `release` 与 `debug` 模式；
+   * 全面启用 V1 (Jar Signature) 与 V2 (Full APK Signature) 签名方案；
+   * 彻底杜绝因云端构建临时密钥不同导致的覆盖安装失败（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），完美保障应用内热更新覆盖体验。
+
+---
+
+## v0.1.5 更新日志
 
 1. **彻底解决 macOS 双击应用图标没有任何反应的问题**：
    * 增加终端运行环境嗅探，当由 Finder / 访达双击打开时，自动激活并弹起 macOS 原生 Terminal.app 独立控制台窗口；
