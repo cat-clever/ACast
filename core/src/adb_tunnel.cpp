@@ -117,3 +117,4 @@ bool AdbTunnel::InjectAppSwitch(const std::string& serial) {
 
 } // namespace adb
 } // namespace acast
+

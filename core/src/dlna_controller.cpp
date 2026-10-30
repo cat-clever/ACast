@@ -324,3 +324,4 @@ bool DlnaController::SetVolume(const DlnaDevice& device, int volume) {
 
 } // namespace dlna
 } // namespace acast
+

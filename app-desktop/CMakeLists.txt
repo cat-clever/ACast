@@ -22,3 +22,4 @@ if(APPLE)
         OUTPUT_NAME "ACast"
     )
 endif()
+

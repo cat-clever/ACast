@@ -32,3 +32,4 @@ if(WIN32)
 else()
     target_link_libraries(acast_core PUBLIC pthread)
 endif()
+

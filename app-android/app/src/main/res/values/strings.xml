@@ -6,3 +6,4 @@
     <string name="status_ready">就绪：支持 USB/Wi-Fi 电脑反控与电视投屏</string>
     <string name="accessibility_description">ACast 电脑反向控制手机服务，用于接收电脑端鼠标点击与滑动指令</string>
 </resources>
+

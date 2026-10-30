@@ -7,3 +7,4 @@
     android:notificationTimeout="100"
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="false" />
+
