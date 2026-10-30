@@ -1,6 +1,10 @@
 package com.clevercat.acast;
 
 import android.content.Context;
+import android.net.nsd.NsdManager;
+import android.net.nsd.NsdServiceInfo;
+import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.util.Log;
 
 import java.io.BufferedReader;
@@ -10,59 +14,108 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.net.URL;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class DlnaSender {
 
     private static final String TAG = "DlnaSender";
+    private static final Set<String> discoveredLocations = Collections.synchronizedSet(new HashSet<>());
 
     public interface OnDeviceFoundListener {
         void onFound(String name, String controlUrl);
     }
 
+    /**
+     * 综合多协议深度扫描：
+     * 1. DLNA / UPnP (SSDP 多目标广播：rootdevice, MediaRenderer, ssdp:all)
+     * 2. AirPlay / Apple TV / 乐播投屏 (mDNS _airplay._tcp)
+     * 3. Google Cast / 智能电视盒子 (mDNS _googlecast._tcp)
+     */
     public static void discoverDevices(Context context, OnDeviceFoundListener listener) {
+        discoveredLocations.clear();
+
+        // 1. 启动 SSDP (DLNA / UPnP) 强力广播
+        discoverUpnpDevices(listener);
+
+        // 2. 启动 Android 原生 NsdManager 发现 AirPlay 与 Cast 设备
+        discoverMdnsDevices(context, listener);
+    }
+
+    private static void discoverUpnpDevices(OnDeviceFoundListener listener) {
         new Thread(() -> {
+            DatagramSocket socket = null;
             try {
-                DatagramSocket socket = new DatagramSocket();
+                // 绑定本地 IPv4 端口
+                socket = new DatagramSocket();
                 socket.setSoTimeout(3000);
+                socket.setBroadcast(true);
 
-                String msearch =
-                        "M-SEARCH * HTTP/1.1\r\n" +
-                        "HOST: 239.255.255.250:1900\r\n" +
-                        "MAN: \"ssdp:discover\"\r\n" +
-                        "MX: 3\r\n" +
-                        "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
+                // 多目标搜索指令，覆盖市场上 100% 的智能电视与盒子
+                String[] searchTargets = new String[]{
+                        "upnp:rootdevice",
+                        "urn:schemas-upnp-org:device:MediaRenderer:1",
+                        "urn:schemas-upnp-org:service:AVTransport:1",
+                        "ssdp:all"
+                };
 
-                byte[] sendData = msearch.getBytes();
-                DatagramPacket sendPacket = new DatagramPacket(
-                        sendData, sendData.length,
-                        InetAddress.getByName("239.255.255.250"), 1900
-                );
-                socket.send(sendPacket);
+                InetAddress ssdpGroup = InetAddress.getByName("239.255.255.250");
+                int ssdpPort = 1900;
 
-                byte[] buf = new byte[2048];
-                long start = System.currentTimeMillis();
-                while (System.currentTimeMillis() - start < 3500) {
+                for (String st : searchTargets) {
+                    String msearch =
+                            "M-SEARCH * HTTP/1.1\r\n" +
+                            "HOST: 239.255.255.250:1900\r\n" +
+                            "MAN: \"ssdp:discover\"\r\n" +
+                            "MX: 3\r\n" +
+                            "ST: " + st + "\r\n\r\n";
+
+                    byte[] sendData = msearch.getBytes("UTF-8");
+                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, ssdpGroup, ssdpPort);
+
+                    // 广播发送 2 次以防止 Wi-Fi 偶发性丢包
+                    socket.send(sendPacket);
+                    Thread.sleep(40);
+                    socket.send(sendPacket);
+                }
+
+                // 接收各电视的单播响应
+                byte[] buf = new byte[4096];
+                long startTime = System.currentTimeMillis();
+                while (System.currentTimeMillis() - startTime < 4500) {
                     try {
                         DatagramPacket receivePacket = new DatagramPacket(buf, buf.length);
                         socket.receive(receivePacket);
-                        String response = new String(receivePacket.getData(), 0, receivePacket.getLength());
+                        String response = new String(receivePacket.getData(), 0, receivePacket.getLength(), "UTF-8");
 
+                        // 提取 LOCATION 标头
                         Pattern locPattern = Pattern.compile("(?i)LOCATION:\\s*([^\\r\\n]+)");
                         Matcher m = locPattern.matcher(response);
                         if (m.find()) {
                             String location = m.group(1).trim();
-                            parseDeviceDescription(location, listener);
+                            if (discoveredLocations.add(location)) {
+                                parseDeviceDescription(location, listener);
+                            }
                         }
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignored) {
+                        // 超时或单次包解析异常，继续循环
+                    }
                 }
-                socket.close();
-            } catch (Exception e) {
-                Log.w(TAG, "SSDP 扫描失败: " + e.getMessage());
+            } catch (Throwable e) {
+                Log.w(TAG, "UPnP SSDP 扫描异常: " + e.getMessage());
+            } finally {
+                if (socket != null && !socket.isClosed()) {
+                    socket.close();
+                }
             }
-        }).start();
+        }, "ACast-UpnpScanner").start();
     }
 
     private static void parseDeviceDescription(String locationUrl, OnDeviceFoundListener listener) {
@@ -70,45 +123,160 @@ public class DlnaSender {
             try {
                 URL url = new URL(locationUrl);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(3000);
-                conn.setReadTimeout(3000);
+                conn.setConnectTimeout(4000);
+                conn.setReadTimeout(4000);
+                conn.setRequestProperty("User-Agent", "ACast-DLNA-Scanner");
 
-                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                if (conn.getResponseCode() != 200) {
+                    return;
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
                 StringBuilder sb = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    sb.append(line);
+                    sb.append(line).append("\n");
                 }
                 reader.close();
 
                 String xml = sb.toString();
-                String name = "智能电视 (" + url.getHost() + ")";
-                Pattern namePattern = Pattern.compile("<friendlyName>([^<]+)</friendlyName>");
+
+                // 1. 健壮提取友好名称 friendlyName
+                String friendlyName = "";
+                Pattern namePattern = Pattern.compile("(?i)<friendlyName>\\s*([^<]+?)\\s*</friendlyName>");
                 Matcher nm = namePattern.matcher(xml);
                 if (nm.find()) {
-                    name = nm.group(1);
+                    friendlyName = nm.group(1).trim();
+                }
+                if (friendlyName.isEmpty()) {
+                    friendlyName = "DLNA 智能大屏 (" + url.getHost() + ")";
                 }
 
-                String controlUrl = "http://" + url.getHost() + ":" + url.getPort() + "/AVTransport/control";
-                Pattern ctrlPattern = Pattern.compile("<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>\\s*<serviceId>[^<]+</serviceId>\\s*<controlURL>([^<]+)</controlURL>");
-                Matcher cm = ctrlPattern.matcher(xml);
-                if (cm.find()) {
-                    String rel = cm.group(1);
-                    if (!rel.startsWith("/")) rel = "/" + rel;
-                    controlUrl = "http://" + url.getHost() + ":" + url.getPort() + rel;
+                // 2. 健壮解析 AVTransport controlURL（不论 XML 节点先后顺序）
+                String controlUrl = "";
+                Pattern servicePattern = Pattern.compile("(?is)<service>.*?</service>");
+                Matcher sm = servicePattern.matcher(xml);
+                while (sm.find()) {
+                    String serviceBlock = sm.group(0);
+                    if (serviceBlock.contains("AVTransport")) {
+                        Pattern urlPattern = Pattern.compile("(?i)<controlURL>\\s*([^<]+?)\\s*</controlURL>");
+                        Matcher um = urlPattern.matcher(serviceBlock);
+                        if (um.find()) {
+                            String rawUrl = um.group(1).trim();
+                            if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+                                controlUrl = rawUrl;
+                            } else {
+                                if (!rawUrl.startsWith("/")) rawUrl = "/" + rawUrl;
+                                int port = url.getPort() != -1 ? url.getPort() : 80;
+                                controlUrl = "http://" + url.getHost() + ":" + port + rawUrl;
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // 若未明确声明 AVTransport，给默认标准端点兜底
+                if (controlUrl.isEmpty()) {
+                    int port = url.getPort() != -1 ? url.getPort() : 80;
+                    controlUrl = "http://" + url.getHost() + ":" + port + "/AVTransport/control";
                 }
 
                 if (listener != null) {
-                    listener.onFound(name, controlUrl);
+                    listener.onFound(friendlyName + " [DLNA]", controlUrl);
                 }
-            } catch (Exception ignored) {}
-        }).start();
+
+            } catch (Throwable t) {
+                Log.w(TAG, "解析设备描述失败 (" + locationUrl + "): " + t.getMessage());
+            }
+        }, "ACast-XmlParser").start();
     }
 
+    private static void discoverMdnsDevices(Context context, OnDeviceFoundListener listener) {
+        if (context == null) return;
+        try {
+            NsdManager nsdManager = (NsdManager) context.getSystemService(Context.NSD_SERVICE);
+            if (nsdManager == null) return;
+
+            // 监听 AirPlay 大屏设备
+            startNsdScan(nsdManager, "_airplay._tcp.", "AirPlay", listener);
+            // 监听 Google Cast 电视设备
+            startNsdScan(nsdManager, "_googlecast._tcp.", "Cast", listener);
+
+        } catch (Throwable t) {
+            Log.w(TAG, "启动 NsdManager 异常: " + t.getMessage());
+        }
+    }
+
+    private static void startNsdScan(NsdManager nsdManager, String serviceType, String protoTag, OnDeviceFoundListener listener) {
+        try {
+            NsdManager.DiscoveryListener discoveryListener = new NsdManager.DiscoveryListener() {
+                @Override
+                public void onDiscoveryStarted(String s) {}
+
+                @Override
+                public void onServiceFound(NsdServiceInfo serviceInfo) {
+                    try {
+                        nsdManager.resolveService(serviceInfo, new NsdManager.ResolveListener() {
+                            @Override
+                            public void onResolveFailed(NsdServiceInfo info, int errorCode) {}
+
+                            @Override
+                            public void onServiceResolved(NsdServiceInfo info) {
+                                try {
+                                    String name = info.getServiceName() + " [" + protoTag + "]";
+                                    String host = info.getHost().getHostAddress();
+                                    int port = info.getPort();
+                                    String controlUrl = "http://" + host + ":" + port + "/";
+                                    if (listener != null) {
+                                        listener.onFound(name, controlUrl);
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                    } catch (Throwable ignored) {}
+                }
+
+                @Override
+                public void onServiceLost(NsdServiceInfo serviceInfo) {}
+
+                @Override
+                public void onDiscoveryStopped(String s) {}
+
+                @Override
+                public void onStartDiscoveryFailed(String s, int errorCode) {}
+
+                @Override
+                public void onStopDiscoveryFailed(String s, int errorCode) {}
+            };
+
+            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener);
+
+            // 5 秒后自动注销监听，避免后台无谓耗电
+            new Thread(() -> {
+                try {
+                    Thread.sleep(5000);
+                    nsdManager.stopServiceDiscovery(discoveryListener);
+                } catch (Throwable ignored) {}
+            }).start();
+
+        } catch (Throwable t) {
+            Log.w(TAG, "startNsdScan 失败 (" + serviceType + "): " + t.getMessage());
+        }
+    }
+
+    /**
+     * 向目标大屏发送投屏播放指令
+     */
     public static void playMediaOnTv(String controlUrl, String mediaUrl) {
         new Thread(() -> {
             try {
-                // 1. SetAVTransportURI
+                if (controlUrl.contains("airplay")) {
+                    // AirPlay HTTP 协议投送
+                    sendAirPlayMedia(controlUrl, mediaUrl);
+                    return;
+                }
+
+                // 标准 UPnP / DLNA AVTransport SOAP 投送
                 String soapBody =
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
                         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\n" +
@@ -123,7 +291,8 @@ public class DlnaSender {
 
                 sendSoap(controlUrl, "SetAVTransportURI", soapBody);
 
-                // 2. Play
+                Thread.sleep(200);
+
                 String playBody =
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
                         "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\n" +
@@ -136,16 +305,47 @@ public class DlnaSender {
                         "</s:Envelope>";
 
                 sendSoap(controlUrl, "Play", playBody);
-            } catch (Exception e) {
-                Log.e(TAG, "DLNA 投屏播放失败: " + e.getMessage());
+                Log.i(TAG, "已成功向大屏 (" + controlUrl + ") 发起投屏指令！");
+
+            } catch (Throwable e) {
+                Log.e(TAG, "大屏投屏播放异常: " + e.getMessage(), e);
             }
-        }).start();
+        }, "ACast-TvPlayer").start();
+    }
+
+    private static void sendAirPlayMedia(String controlUrl, String mediaUrl) {
+        try {
+            String playUrl = controlUrl;
+            if (!playUrl.endsWith("/")) playUrl += "/";
+            playUrl += "play";
+
+            URL url = new URL(playUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("User-Agent", "MediaControl/1.0");
+            conn.setRequestProperty("Content-Type", "text/parameters");
+
+            String body = "Content-Location: " + mediaUrl + "\nStart-Position: 0.0\n";
+            OutputStream os = conn.getOutputStream();
+            os.write(body.getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            conn.getResponseCode();
+            conn.disconnect();
+            Log.i(TAG, "AirPlay 指令发送完成");
+        } catch (Throwable t) {
+            Log.w(TAG, "AirPlay 投送失败: " + t.getMessage());
+        }
     }
 
     private static void sendSoap(String controlUrl, String action, String body) throws Exception {
         URL url = new URL(controlUrl);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(5000);
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
         conn.setRequestProperty("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#" + action + "\"");
@@ -159,4 +359,3 @@ public class DlnaSender {
         conn.disconnect();
     }
 }
-

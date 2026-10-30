@@ -24,7 +24,11 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
@@ -48,7 +52,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 注册全局异常崩溃捕获器，杜绝任何未处理异常导致闪退退出
+        // 注册全局异常崩溃捕获器，杜绝闪退退出
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
             Log.e(TAG, "全局捕获未处理异常: " + throwable.getMessage(), throwable);
             new Handler(Looper.getMainLooper()).post(() -> {
@@ -71,16 +75,8 @@ public class MainActivity extends AppCompatActivity {
         btnCheckUpdate.setOnClickListener(v -> performUpdateCheck(true));
         performUpdateCheck(false);
 
-        // 允许组播接收 SSDP 广播
-        try {
-            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wifi != null) {
-                multicastLock = wifi.createMulticastLock("ACastMulticastLock");
-                multicastLock.acquire();
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "获取 MulticastLock 异常: " + t.getMessage());
-        }
+        // 激活 Wi-Fi 组播接收锁
+        acquireMulticastLock();
 
         btnToggleCapture.setOnClickListener(v -> {
             if (!isCapturing) {
@@ -93,21 +89,79 @@ public class MainActivity extends AppCompatActivity {
         btnScanTv.setOnClickListener(v -> {
             deviceList.clear();
             deviceAdapter.notifyDataSetChanged();
-            Toast.makeText(this, "正在搜索局域网大屏 (DLNA / Cast / AirPlay)...", Toast.LENGTH_SHORT).show();
-            // 启动后台 SSDP 扫描
+            Toast.makeText(this, "正在全网深度扫描大屏 (DLNA / Cast / AirPlay)...", Toast.LENGTH_SHORT).show();
+
+            acquireMulticastLock();
+
             DlnaSender.discoverDevices(this, (name, controlUrl) -> runOnUiThread(() -> {
-                String item = name + " (" + controlUrl + ")";
+                String item = name + " -> " + controlUrl;
                 if (!deviceList.contains(item)) {
                     deviceList.add(item);
                     deviceAdapter.notifyDataSetChanged();
                 }
             }));
+
+            // 4 秒后若仍未搜到任何设备，给用户贴心指引
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (deviceList.isEmpty()) {
+                    Toast.makeText(MainActivity.this, "未搜到设备。请确认手机与电视连接在同一 Wi-Fi，且电视已开机并开启投屏服务", Toast.LENGTH_LONG).show();
+                }
+            }, 4000);
         });
 
         lvDevices.setOnItemClickListener((parent, view, position, id) -> {
             String selected = deviceList.get(position);
-            Toast.makeText(this, "已向大屏发起投屏指令: " + selected, Toast.LENGTH_LONG).show();
+            String controlUrl = selected;
+            int arrowIdx = selected.lastIndexOf(" -> ");
+            if (arrowIdx != -1) {
+                controlUrl = selected.substring(arrowIdx + 4).trim();
+            }
+            String myIp = getLocalIpAddress(this);
+            String streamUrl = "http://" + myIp + ":8088/live.ts";
+            DlnaSender.playMediaOnTv(controlUrl, streamUrl);
+            Toast.makeText(this, "已发起投屏！实时音画流: " + streamUrl, Toast.LENGTH_LONG).show();
         });
+    }
+
+    private void acquireMulticastLock() {
+        try {
+            if (multicastLock == null) {
+                WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                if (wifi != null) {
+                    multicastLock = wifi.createMulticastLock("ACastMulticastLock");
+                    multicastLock.setReferenceCounted(true);
+                }
+            }
+            if (multicastLock != null && !multicastLock.isHeld()) {
+                multicastLock.acquire();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "获取 MulticastLock 异常: " + t.getMessage());
+        }
+    }
+
+    public static String getLocalIpAddress(Context context) {
+        try {
+            WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null && wm.getConnectionInfo() != null) {
+                int ip = wm.getConnectionInfo().getIpAddress();
+                if (ip != 0) {
+                    return (ip & 0xFF) + "." + ((ip >> 8) & 0xFF) + "." + ((ip >> 16) & 0xFF) + "." + ((ip >> 24) & 0xFF);
+                }
+            }
+            Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces();
+            while (en.hasMoreElements()) {
+                NetworkInterface intf = en.nextElement();
+                Enumeration<InetAddress> enumIpAddr = intf.getInetAddresses();
+                while (enumIpAddr.hasMoreElements()) {
+                    InetAddress inetAddress = enumIpAddr.nextElement();
+                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof Inet4Address) {
+                        return inetAddress.getHostAddress();
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "127.0.0.1";
     }
 
     private void requestRequiredPermissionsAndStartCapture() {
@@ -132,7 +186,6 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSIONS_CODE) {
-            // 无论麦克风权限是否完全授权，均允许继续开启投屏（未授权时纯视频投屏，绝不阻断或退出）
             launchMediaProjectionPrompt();
         }
     }

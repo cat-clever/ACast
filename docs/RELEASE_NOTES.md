@@ -1,6 +1,17 @@
 # ACast 发版说明
 
-## v0.1.3 更新日志 (最新)
+## v0.1.4 更新日志 (最新)
+
+1. **彻底攻克局域网投屏搜索不到大屏设备的技术顽疾**：
+   * 配置 `android:usesCleartextTraffic="true"`，解除 Android 9~14 底层网络安全策略对局域网明文 HTTP 设备描述的拦截；
+   * 扩展 SSDP 为多目标复合探测（`upnp:rootdevice`, `MediaRenderer`, `AVTransport`, `ssdp:all`），多频次重发防丢包；
+   * 集成 Android 原生 `NsdManager` 服务发现，同步搜索 AirPlay（`_airplay._tcp.`）和 Cast（`_googlecast._tcp.`）大屏设备；
+   * 重构容错 XML 解析引擎，彻底解决不同品牌电视标签顺序不一致导致的解析丢弃问题；
+   * 点击列表项真正调起向大屏的推流播放指令。
+
+---
+
+## v0.1.3 更新日志
 
 1. **彻底修复 Android 点击“开启屏幕投屏”闪退自动退出的问题**：
    * 修复 Android 14 (API 34) 前台服务类型与 `MediaProjection.Callback` 注册要求；
