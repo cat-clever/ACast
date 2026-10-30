@@ -73,7 +73,7 @@ public class MainActivity extends AppCompatActivity {
         btnScanTv.setOnClickListener(v -> {
             deviceList.clear();
             deviceAdapter.notifyDataSetChanged();
-            Toast.makeText(this, "正在搜索 B站/DLNA 电视设备...", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "正在搜索局域网大屏 (DLNA / Cast / AirPlay)...", Toast.LENGTH_SHORT).show();
             // 启动后台 SSDP 扫描
             DlnaSender.discoverDevices(this, (name, controlUrl) -> runOnUiThread(() -> {
                 String item = name + " (" + controlUrl + ")";

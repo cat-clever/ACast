@@ -2,7 +2,7 @@
     <string name="app_name">ACast 投屏</string>
     <string name="btn_start_capture">开启屏幕投屏</string>
     <string name="btn_stop_capture">停止投屏</string>
-    <string name="btn_scan_dlna">搜索局域网电视 (B站协议)</string>
+    <string name="btn_scan_dlna">搜索局域网大屏 (DLNA / Cast / AirPlay)</string>
     <string name="status_ready">就绪：支持 USB/Wi-Fi 电脑反控与电视投屏</string>
     <string name="accessibility_description">ACast 电脑反向控制手机服务，用于接收电脑端鼠标点击与滑动指令</string>
 </resources>

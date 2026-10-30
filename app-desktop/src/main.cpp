@@ -15,7 +15,7 @@
 void PrintBanner() {
     std::cout << "====================================================\n";
     std::cout << "       ACast 跨平台投屏与反向控制端 v0.1.2          \n";
-    std::cout << "  支持 B站/DLNA 电视投屏 & USB/Wi-Fi 极低延迟反控  \n";
+    std::cout << "  支持 DLNA / Cast / AirPlay 投屏 & USB/Wi-Fi 极低延迟反控  \n";
     std::cout << "  内置直接在线自动热更新系统 (免手动下载 DMG/ZIP)   \n";
 #if defined(_M_ARM64) || defined(__aarch64__)
     std::cout << "  架构: ARM64 原生最高性能模式\n";
@@ -62,7 +62,7 @@ int main(int argc, char* argv[]) {
         std::cout << "  -> 本地环境未检测到 adb 命令行工具，可切换为局域网 Wi-Fi 模式。\n";
     }
 
-    std::cout << "\n[局域网检测] 正在搜索大屏与智能电视 (B站 / DLNA 协议)... \n";
+    std::cout << "\n[局域网检测] 正在搜索大屏与智能电视 (DLNA / Cast / AirPlay 协议)... \n";
     acast::dlna::DlnaController dlna_ctl;
     dlna_ctl.StartDiscovery([](const acast::dlna::DlnaDevice& dev) {
         std::cout << "  -> [发现电视] " << dev.friendly_name << " (" << dev.ip_address << ")\n";

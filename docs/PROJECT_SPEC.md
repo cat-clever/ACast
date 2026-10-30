@@ -7,7 +7,7 @@
 ```mermaid
 graph LR
     subgraph 场景一: 大屏观影 (免安装客户端)
-        M1["手机端 (Android / iOS)"] --"标准 DLNA / AirPlay 协议<br/>(B站同款协议)"--> TV["智能电视 / 盒子 / 投影仪<br/>(电视免安装任何软件，一键投屏)"]
+        M1["手机端 (Android / iOS)"] --"标准 DLNA / Cast / AirPlay 协议"--> TV["智能电视 / 盒子 / 投影仪<br/>(大屏免安装任何软件，一键投屏)"]
     end
 
     subgraph 场景二: 桌面办公与游戏 (极低延迟 & 反向操控)

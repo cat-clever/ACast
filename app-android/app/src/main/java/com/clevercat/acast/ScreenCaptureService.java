@@ -54,7 +54,7 @@ public class ScreenCaptureService extends Service {
 
         // 启动 FastMirror 桌面反控通信服务
         FastMirrorSender.getInstance().startServer(19999);
-        // 启动 B站/DLNA 实时流服务器
+        // 启动 DLNA / Cast / AirPlay 实时流服务器
         LocalHttpTsServer.getInstance().startServer(8088);
     }
 

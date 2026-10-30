@@ -319,3 +319,4 @@ bool AutoUpdater::ApplyWindowsUpdate(const std::string& zip_path, const std::fun
 
 } // namespace updater
 } // namespace acast
+

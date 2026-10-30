@@ -175,3 +175,4 @@ public class AutoUpdater {
         return false;
     }
 }
+

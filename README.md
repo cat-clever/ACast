@@ -4,7 +4,7 @@
   <img src="app-desktop/resources/master_icon.png" width="120" height="120" alt="ACast Icon" />
 </p>
 
-一套集成了 **“B站/DLNA 免装客户端大屏投屏”** 与 **“Windows/macOS 桌面端 USB/Wi-Fi 极低延迟反向操控（全架构原生支持）”** 的开源投屏系统。
+一套集成了 **“DLNA / Cast / AirPlay 免装客户端大屏投屏”** 与 **“Windows/macOS 桌面端 USB/Wi-Fi 极低延迟反向操控（全架构原生支持）”** 的开源投屏系统。
 
 [![Release](https://img.shields.io/github/v/release/cat-clever/ACast)](https://github.com/cat-clever/ACast/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
@@ -14,8 +14,8 @@
   - **Windows x86_64**：传统 Intel / AMD 64位电脑。
   - **Windows ARM64**：高通骁龙 X Elite 笔记本、Surface Pro ARM 系列、Win11 on ARM，免指令模拟原生最高性能。
   - **macOS Universal 2**：一份包原生支持 Apple Silicon（M1/M2/M3/M4）与 Intel 架构 Mac。
-- 📺 **场景一：电视大屏免装软件投屏（B站 / DLNA 协议体系）**：
-  - 对标 B 站 / 爱奇艺投屏机制，支持局域网内任意智能电视、电视盒子。
+- 📺 **场景一：大屏免装软件投屏（DLNA / Cast / AirPlay 协议体系）**：
+  - 原生支持标准 DLNA、Cast 与 AirPlay 协议，局域网内任意智能电视、大屏盒子即搜即投。
   - 电视端**无需安装任何接收软件**，即搜即投，免密秒连。
 - 🎮 **场景二：桌面端极低延迟 & 鼠标键盘反向操控手机（自研 FastMirror 协议）**：
   - 支持 **USB 数据线直连**（15~35ms 极低延迟）与 **局域网 Wi-Fi** 无线直连。
@@ -38,7 +38,7 @@
 | **macOS (Universal 2)**<br>Apple Silicon (M1~M4) + Intel | `acast-macos-universal.dmg` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-macos-universal.dmg) | 拖拽直接安装，含 `/Applications` 替身与软件图标 |
 | **Windows x86_64**<br>传统 Intel / AMD 64位电脑 | `acast-windows-x64.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-windows-x64.zip) | 解压即用，原生内嵌图标，支持 USB 反控手机 |
 | **Windows ARM64**<br>骁龙 X Elite / Surface ARM / Win11 on ARM | `acast-windows-arm64.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-windows-arm64.zip) | 原生 ARM64 指令集，无模拟损耗 |
-| **Android 手机端**<br>Android 7.0 及以上所有机型 | `acast-android.apk` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-android.apk) | 支持 B站/DLNA 电视投屏 & USB/Wi-Fi 被控 |
+| **Android 手机端**<br>Android 7.0 及以上所有机型 | `acast-android.apk` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-android.apk) | 支持 DLNA / Cast / AirPlay 投屏 & USB/Wi-Fi 被控 |
 | **iOS 手机端**<br>iPhone (iOS 16.0 及以上) | `acast-ios.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-ios.zip) | 包含 ReplayKit 2 广播上传扩展与应用图标 |
 
 > 💡 提示：如需查看版本更新日志或下载历史版本，请访问 [GitHub Releases 页面](https://github.com/cat-clever/ACast/releases)。
