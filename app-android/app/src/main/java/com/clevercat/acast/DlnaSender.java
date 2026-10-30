@@ -17,10 +17,13 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -265,13 +268,30 @@ public class DlnaSender {
     }
 
     /**
-     * 向目标大屏发送投屏播放指令
+     * 向目标大屏发送投屏播放指令（重载方法）
      */
     public static void playMediaOnTv(String controlUrl, String mediaUrl) {
+        playMediaOnTv("", controlUrl, mediaUrl);
+    }
+
+    /**
+     * 向目标大屏发送投屏播放指令 (支持 DLNA / AirPlay / Cast 协议智能分流)
+     */
+    public static void playMediaOnTv(String deviceName, String controlUrl, String mediaUrl) {
         new Thread(() -> {
             try {
-                if (controlUrl.contains("airplay")) {
-                    // AirPlay HTTP 协议投送
+                boolean isAirPlay = false;
+                if (deviceName != null && (deviceName.contains("AirPlay") || deviceName.contains("airplay"))) {
+                    isAirPlay = true;
+                }
+                if (controlUrl != null) {
+                    if (controlUrl.contains(":7000") || controlUrl.contains(":7001") || controlUrl.contains("airplay")) {
+                        isAirPlay = true;
+                    }
+                }
+
+                if (isAirPlay) {
+                    Log.i(TAG, "目标设备识别为 AirPlay 协议，启动 AirPlay 专有投送通道 (" + deviceName + " -> " + controlUrl + ")");
                     sendAirPlayMedia(controlUrl, mediaUrl);
                     return;
                 }
@@ -325,29 +345,96 @@ public class DlnaSender {
     }
 
     private static void sendAirPlayMedia(String controlUrl, String mediaUrl) {
-        try {
-            String playUrl = controlUrl;
-            if (!playUrl.endsWith("/")) playUrl += "/";
-            playUrl += "play";
+        // 候选目标端口列表：优先尝试 7000 与 7001
+        List<String> targetUrls = new ArrayList<>();
+        String base = controlUrl;
+        if (!base.endsWith("/")) base += "/";
+        targetUrls.add(base + "play");
 
-            URL url = new URL(playUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setDoOutput(true);
-            conn.setRequestProperty("User-Agent", "MediaControl/1.0");
-            conn.setRequestProperty("Content-Type", "text/parameters");
+        if (base.contains(":7001/")) {
+            targetUrls.add(base.replace(":7001/", ":7000/") + "play");
+        } else if (base.contains(":7000/")) {
+            targetUrls.add(base.replace(":7000/", ":7001/") + "play");
+        }
 
-            String body = "Content-Location: " + mediaUrl + "\nStart-Position: 0.0\n";
-            OutputStream os = conn.getOutputStream();
-            os.write(body.getBytes("UTF-8"));
-            os.flush();
-            os.close();
+        boolean success = false;
+        // 1. 尝试以标准 text/parameters 协议发送 POST /play
+        for (String targetUrl : targetUrls) {
+            try {
+                Log.i(TAG, "正在向 AirPlay 接收端发起 POST /play 指令: " + targetUrl);
+                URL url = new URL(targetUrl);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(4000);
+                conn.setReadTimeout(4000);
+                conn.setDoOutput(true);
+                conn.setRequestProperty("User-Agent", "MediaControl/1.0");
+                conn.setRequestProperty("Content-Type", "text/parameters");
+                conn.setRequestProperty("X-Apple-Session-ID", UUID.randomUUID().toString());
 
-            conn.getResponseCode();
-            conn.disconnect();
-            Log.i(TAG, "AirPlay 指令发送完成");
-        } catch (Throwable t) {
-            Log.w(TAG, "AirPlay 投送失败: " + t.getMessage());
+                String body = "Content-Location: " + mediaUrl + "\nStart-Position: 0.0\n";
+                byte[] bodyBytes = body.getBytes("UTF-8");
+                conn.setRequestProperty("Content-Length", String.valueOf(bodyBytes.length));
+
+                OutputStream os = conn.getOutputStream();
+                os.write(bodyBytes);
+                os.flush();
+                os.close();
+
+                int code = conn.getResponseCode();
+                conn.disconnect();
+                Log.i(TAG, "AirPlay text/parameters 响应码: " + code + " (目标: " + targetUrl + ")");
+
+                if (code >= 200 && code < 300) {
+                    success = true;
+                    break;
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "AirPlay 指令尝试异常 (" + targetUrl + "): " + t.getMessage());
+            }
+        }
+
+        // 2. 若 text/parameters 未成功，自动以标准 Apple XML Plist 格式回退重试
+        if (!success) {
+            for (String targetUrl : targetUrls) {
+                try {
+                    URL url = new URL(targetUrl);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setConnectTimeout(4000);
+                    conn.setReadTimeout(4000);
+                    conn.setDoOutput(true);
+                    conn.setRequestProperty("User-Agent", "MediaControl/1.0");
+                    conn.setRequestProperty("Content-Type", "text/x-apple-plist+xml");
+                    conn.setRequestProperty("X-Apple-Session-ID", UUID.randomUUID().toString());
+
+                    String plistBody =
+                            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+                            "<plist version=\"1.0\">\n" +
+                            "<dict>\n" +
+                            "  <key>Content-Location</key>\n" +
+                            "  <string>" + mediaUrl + "</string>\n" +
+                            "  <key>Start-Position</key>\n" +
+                            "  <real>0.0</real>\n" +
+                            "</dict>\n" +
+                            "</plist>";
+                    byte[] plistBytes = plistBody.getBytes("UTF-8");
+                    conn.setRequestProperty("Content-Length", String.valueOf(plistBytes.length));
+
+                    OutputStream os = conn.getOutputStream();
+                    os.write(plistBytes);
+                    os.flush();
+                    os.close();
+
+                    int code = conn.getResponseCode();
+                    conn.disconnect();
+                    Log.i(TAG, "AirPlay XML plist 响应码: " + code + " (目标: " + targetUrl + ")");
+                    if (code >= 200 && code < 300) {
+                        break;
+                    }
+                } catch (Throwable ignored) {}
+            }
         }
     }
 

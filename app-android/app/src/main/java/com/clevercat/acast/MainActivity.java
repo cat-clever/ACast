@@ -275,7 +275,7 @@ public class MainActivity extends AppCompatActivity {
         }
         String myIp = getLocalIpAddress(this);
         String streamUrl = "http://" + myIp + ":8088/live.ts";
-        DlnaSender.playMediaOnTv(controlUrl, streamUrl);
+        DlnaSender.playMediaOnTv(deviceName, controlUrl, streamUrl);
         Toast.makeText(this, "已发起投屏至【" + deviceName + "】！", Toast.LENGTH_SHORT).show();
         tvStatus.setText("✓ 正在向【" + deviceName + "】投屏中 (实时音画传输中)");
     }

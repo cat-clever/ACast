@@ -1,6 +1,15 @@
 # ACast 发版说明
 
-## v0.1.8 更新日志 (最新)
+## v0.1.9 更新日志 (最新)
+
+1. **彻底解决 AirPlay 协议大屏无法投屏及 404 (playlist not found) 问题**：
+   * 修复协议分流错误：解决此前误将 DLNA SOAP XML 发送至 AirPlay 7001 端口导致 404 的致命缺陷；
+   * 全面实现标准 AirPlay `POST /play` 控制协议，携带会话标识与 `Content-Location` 参数；
+   * 增加 7000 与 7001 双端口自动容灾轮询，增加 text/parameters 与 Apple XML Plist 自动回退机制。
+
+---
+
+## v0.1.8 更新日志
 
 1. **彻底解决电视投屏一直显示“在缓冲”及拉流失败 (Operation Stopped) 的重大问题**：
    * 纯 Java 实现完整的 MPEG-2 TS 实时封装引擎，补全流媒体 Socket 推流管道；
