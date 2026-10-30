@@ -12,11 +12,11 @@
 namespace acast {
 namespace desktop {
 
-using LogCallback = std::function<void(const std::string&)>;
-using TvDeviceCallback = std::function<void(const std::vector<acast::dlna::DlnaDevice>&)>;
-using UsbDeviceCallback = std::function<void(const std::vector<acast::adb::AdbDevice>&)>;
-using UpdateCallback = std::function<void(const acast::updater::UpdateInfo&)>;
-using ProgressCallback = std::function<void(const std::string&, int)>;
+using LogCallback = std::function<void(std::string)>;
+using TvDeviceCallback = std::function<void(std::vector<acast::dlna::DlnaDevice>)>;
+using UsbDeviceCallback = std::function<void(std::vector<acast::adb::AdbDevice>)>;
+using UpdateCallback = std::function<void(acast::updater::UpdateInfo)>;
+using ProgressCallback = std::function<void(std::string, int)>;
 
 class DesktopController {
 public:
@@ -69,3 +69,4 @@ private:
 
 } // namespace desktop
 } // namespace acast
+

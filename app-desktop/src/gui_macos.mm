@@ -15,11 +15,19 @@
     NSButton* updateButton;
     NSTextField* usbStatusLabel;
     NSProgressIndicator* updateProgressIndicator;
-    std::vector<acast::dlna::DlnaDevice> currentTvDevices;
+    NSMutableArray<NSDictionary<NSString*, NSString*>*>* tvDevicesList;
 }
 @end
 
 @implementation AppDelegate
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        tvDevicesList = [[NSMutableArray alloc] init];
+    }
+    return self;
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     NSRect frame = NSMakeRect(0, 0, 780, 640);
@@ -187,60 +195,84 @@
     [logScrollView setDocumentView:logTextView];
     [contentView addSubview:logScrollView];
 
-    // ==================== 6. 注册 Controller 回调 ====================
+    // ==================== 6. 注册 Controller 弱引用线程安全回调 ====================
     auto& ctl = acast::desktop::DesktopController::GetInstance();
+    __weak typeof(self) weakSelf = self;
 
-    ctl.SetLogCallback([self](const std::string& line) {
+    ctl.SetLogCallback([weakSelf](std::string line) {
         NSString* text = [NSString stringWithUTF8String:(line + "\n").c_str()];
         dispatch_async(dispatch_get_main_queue(), ^{
+            AppDelegate* strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf->logTextView) return;
             NSAttributedString* attr = [[NSAttributedString alloc] initWithString:text attributes:@{
                 NSForegroundColorAttributeName: [NSColor colorWithCalibratedRed:0.85 green:0.90 blue:0.95 alpha:1.0],
                 NSFontAttributeName: [NSFont fontWithName:@"Menlo" size:11] ?: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
             }];
-            [[self->logTextView textStorage] appendAttributedString:attr];
-            [self->logTextView scrollRangeToVisible:NSMakeRange([[self->logTextView string] length], 0)];
+            [[strongSelf->logTextView textStorage] appendAttributedString:attr];
+            [strongSelf->logTextView scrollRangeToVisible:NSMakeRange([[strongSelf->logTextView string] length], 0)];
         });
     });
 
-    ctl.SetTvDeviceCallback([self](const std::vector<acast::dlna::DlnaDevice>& devices) {
+    ctl.SetTvDeviceCallback([weakSelf](std::vector<acast::dlna::DlnaDevice> devices) {
+        NSMutableArray* array = [[NSMutableArray alloc] initWithCapacity:devices.size()];
+        for (const auto& dev : devices) {
+            NSString* name = [NSString stringWithUTF8String:dev.friendly_name.c_str()] ?: @"未知设备";
+            std::string ep = dev.ip_address + "  (" + dev.control_url + ")";
+            NSString* endpoint = [NSString stringWithUTF8String:ep.c_str()] ?: @"";
+            [array addObject:@{@"name": name, @"endpoint": endpoint}];
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            self->currentTvDevices = devices;
-            [self->tvTableView reloadData];
+            AppDelegate* strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf->tvTableView) return;
+            strongSelf->tvDevicesList = array;
+            [strongSelf->tvTableView reloadData];
         });
     });
 
-    ctl.SetUsbDeviceCallback([self](const std::vector<acast::adb::AdbDevice>& devices) {
+    ctl.SetUsbDeviceCallback([weakSelf](std::vector<acast::adb::AdbDevice> devices) {
+        BOOL empty = devices.empty();
+        NSString* desc = nil;
+        if (!empty) {
+            std::string d = "已连接: " + devices[0].model + " (" + devices[0].serial + ") [高速反控通道已建立]";
+            desc = [NSString stringWithUTF8String:d.c_str()];
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (devices.empty()) {
-                [self->usbStatusLabel setStringValue:@"未检测到 USB 手机 (请开启 USB 调试并插入数据线)"];
-                [self->usbStatusLabel setTextColor:[NSColor secondaryLabelColor]];
+            AppDelegate* strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf->usbStatusLabel) return;
+            if (empty) {
+                [strongSelf->usbStatusLabel setStringValue:@"未检测到 USB 手机 (请开启 USB 调试并插入数据线)"];
+                [strongSelf->usbStatusLabel setTextColor:[NSColor secondaryLabelColor]];
             } else {
-                std::string desc = "已连接: " + devices[0].model + " (" + devices[0].serial + ") [高速反控通道已建立]";
-                [self->usbStatusLabel setStringValue:[NSString stringWithUTF8String:desc.c_str()]];
-                [self->usbStatusLabel setTextColor:[NSColor systemGreenColor]];
+                [strongSelf->usbStatusLabel setStringValue:desc ?: @""];
+                [strongSelf->usbStatusLabel setTextColor:[NSColor systemGreenColor]];
             }
         });
     });
 
-    ctl.SetUpdateCallback([self](const acast::updater::UpdateInfo& info) {
+    ctl.SetUpdateCallback([weakSelf](acast::updater::UpdateInfo info) {
+        BOOL hasUpdate = info.has_update;
+        NSString* latestVer = [NSString stringWithUTF8String:info.latest_version.c_str()] ?: @"";
+        NSString* currentVer = [NSString stringWithUTF8String:info.current_version.c_str()] ?: @"";
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (info.has_update) {
-                std::string banner = "🎉 发现新版本: " + info.latest_version + " (当前: " + info.current_version + ")";
-                [self->updateBannerLabel setStringValue:[NSString stringWithUTF8String:banner.c_str()]];
-                [self->updateBannerLabel setHidden:NO];
-                [self->updateButton setHidden:NO];
+            AppDelegate* strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf->updateBannerLabel || !strongSelf->updateButton) return;
+            if (hasUpdate) {
+                NSString* banner = [NSString stringWithFormat:@"🎉 发现新版本: %@ (当前: %@)", latestVer, currentVer];
+                [strongSelf->updateBannerLabel setStringValue:banner];
+                [strongSelf->updateBannerLabel setHidden:NO];
+                [strongSelf->updateButton setHidden:NO];
             } else {
-                [self->updateBannerLabel setHidden:YES];
-                [self->updateButton setHidden:YES];
+                [strongSelf->updateBannerLabel setHidden:YES];
+                [strongSelf->updateButton setHidden:YES];
             }
         });
     });
-
-    // 启动核心后台服务
-    ctl.Init();
 
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+
+    // 核心后台服务在 UI 视窗完全就绪后再启动
+    ctl.Init();
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
@@ -262,11 +294,15 @@
     [updateProgressIndicator setHidden:NO];
     [updateProgressIndicator setDoubleValue:10.0];
 
-    acast::desktop::DesktopController::GetInstance().PerformUpdateAsync([self](const std::string& status, int progress) {
+    __weak typeof(self) weakSelf = self;
+    acast::desktop::DesktopController::GetInstance().PerformUpdateAsync([weakSelf](std::string status, int progress) {
+        NSString* statusStr = [NSString stringWithUTF8String:status.c_str()] ?: @"";
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self->updateProgressIndicator setDoubleValue:(double)progress];
+            AppDelegate* strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf->updateProgressIndicator setDoubleValue:(double)progress];
             if (progress >= 100) {
-                [self->updateBannerLabel setStringValue:[NSString stringWithUTF8String:status.c_str()]];
+                [strongSelf->updateBannerLabel setStringValue:statusStr];
             }
         });
     });
@@ -295,12 +331,12 @@
 #pragma mark - NSTableViewDataSource & Delegate
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
-    return (NSInteger)currentTvDevices.size();
+    return (NSInteger)[tvDevicesList count];
 }
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
-    if (row < 0 || row >= (NSInteger)currentTvDevices.size()) return nil;
-    const auto& dev = currentTvDevices[row];
+    if (row < 0 || row >= (NSInteger)[tvDevicesList count]) return nil;
+    NSDictionary* dev = tvDevicesList[row];
 
     NSTextField* cell = [tableView makeViewWithIdentifier:[tableColumn identifier] owner:self];
     if (!cell) {
@@ -314,10 +350,10 @@
     }
 
     if ([[tableColumn identifier] isEqualToString:@"name"]) {
-        [cell setStringValue:[NSString stringWithUTF8String:dev.friendly_name.c_str()]];
+        [cell setStringValue:dev[@"name"] ?: @""];
+        [cell setTextColor:[NSColor labelColor]];
     } else {
-        std::string ipEndpoint = dev.ip_address + "  (" + dev.control_url + ")";
-        [cell setStringValue:[NSString stringWithUTF8String:ipEndpoint.c_str()]];
+        [cell setStringValue:dev[@"endpoint"] ?: @""];
         [cell setTextColor:[NSColor secondaryLabelColor]];
     }
 
@@ -329,13 +365,15 @@
 namespace acast {
 namespace desktop {
 
+static AppDelegate* g_appDelegate = nil;
+
 int RunDesktopApp(int argc, char* argv[]) {
     @autoreleasepool {
         NSApplication* app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
 
-        AppDelegate* delegate = [[AppDelegate alloc] init];
-        [app setDelegate:delegate];
+        g_appDelegate = [[AppDelegate alloc] init];
+        [app setDelegate:g_appDelegate];
 
         // 构造标准的 macOS 应用菜单 (Quit 等快捷键)
         NSMenu* menubar = [[NSMenu alloc] init];

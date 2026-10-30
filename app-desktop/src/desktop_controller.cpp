@@ -265,3 +265,4 @@ acast::updater::UpdateInfo DesktopController::GetLastUpdateInfo() const {
 
 } // namespace desktop
 } // namespace acast
+

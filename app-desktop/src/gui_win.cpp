@@ -275,26 +275,26 @@ int RunDesktopApp(int argc, char* argv[]) {
     // 6. 注册 Controller 线程安全回调
     auto& ctl = acast::desktop::DesktopController::GetInstance();
 
-    ctl.SetLogCallback([](const std::string& line) {
+    ctl.SetLogCallback([](std::string line) {
         if (g_hWnd) {
             std::string* p = new std::string(line);
             PostMessage(g_hWnd, WM_ACAST_LOG, 0, (LPARAM)p);
         }
     });
 
-    ctl.SetTvDeviceCallback([](const std::vector<acast::dlna::DlnaDevice>&) {
+    ctl.SetTvDeviceCallback([](std::vector<acast::dlna::DlnaDevice>) {
         if (g_hWnd) {
             PostMessage(g_hWnd, WM_ACAST_TV_UPDATE, 0, 0);
         }
     });
 
-    ctl.SetUsbDeviceCallback([](const std::vector<acast::adb::AdbDevice>&) {
+    ctl.SetUsbDeviceCallback([](std::vector<acast::adb::AdbDevice>) {
         if (g_hWnd) {
             PostMessage(g_hWnd, WM_ACAST_USB_UPDATE, 0, 0);
         }
     });
 
-    ctl.SetUpdateCallback([](const acast::updater::UpdateInfo&) {
+    ctl.SetUpdateCallback([](acast::updater::UpdateInfo) {
         if (g_hWnd) {
             PostMessage(g_hWnd, WM_ACAST_UPDATE_INFO, 0, 0);
         }
