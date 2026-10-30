@@ -1,6 +1,16 @@
 # ACast 发版说明
 
-## v0.2.3 更新日志 (最新)
+## v0.2.4 更新日志 (最新)
+
+1. **彻底修复 macOS 及 Windows 端一键原地热更新失败与权限拒绝根因**：
+   * **规范用户级缓存路径**：彻底移除应用安装目录下的相对路径 `update_cache`。macOS 采用标准用户缓存目录 `~/Library/Caches/com.catclever.acast/update`，Windows 采用 `%LOCALAPPDATA%\ACast\update`，杜绝从 `/Applications/ACast.app` 启动时工作目录在根目录 `/` 引起的 `EACCES (Permission denied)` 与 curl 错误 23；
+   * **递归创建目录支持**：引入 `CreateDirectoriesRecursively`，保证深层缓存目录安全按需创建；
+   * **三重网络加速与镜像容灾通道**：配置 15 秒连接超时与重试，首选 GitHub Releases 官方直链；当遭遇国内网络超时或波动时，自动无缝切换至高速加速镜像（`mirror.ghproxy.com` 及 `ghproxy.net`）进行二次容灾下载；严格校验安装包大小 (>512KB) 杜绝损坏包；
+   * **macOS 平滑覆盖与无感自启**：后台脚本等待原主进程 PID 退出后原地覆盖安装，自动清理 DMG 挂载卷与 quarantine 隔离属性，并无缝重启新版本。
+
+---
+
+## v0.2.3 更新日志
 
 1. **彻底攻克 Android DLNA 投屏大屏拉流失败 (Operation Stopped) 的核心根因**：
    * **静止画面恒定推流守护**：为硬件编码器配置 `KEY_REPEAT_PREVIOUS_FRAME_AFTER = 100000L`，彻底解决屏幕静止时编码器停产导致电视 2 秒读不到新数据超时抛出 `Operation Stopped`；

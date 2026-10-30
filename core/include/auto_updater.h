@@ -17,7 +17,7 @@ struct UpdateInfo {
 
 class AutoUpdater {
 public:
-    static constexpr const char* CURRENT_VERSION = "0.2.3";
+    static constexpr const char* CURRENT_VERSION = "0.2.4";
 
     // 检查 GitHub Releases 是否有新版本
     static UpdateInfo CheckForUpdate(const std::string& owner = "cat-clever", const std::string& repo = "ACast");
@@ -30,6 +30,9 @@ public:
 
     // 语义化版本号比较 (latest > current 则返回 true)
     static bool IsNewerVersion(const std::string& latest, const std::string& current);
+
+    // 获取标准平台规范的用户级持久化缓存目录
+    static std::string GetUpdateCacheDir();
 
 private:
     static bool DownloadFile(const std::string& url, const std::string& save_path, const std::function<void(const std::string& status, int progress)>& cb);
