@@ -25,6 +25,20 @@
 - 🚀 **100% 纯云端 GitHub Actions 矩阵编译**：
   - 云端自动打包输出：`Android APK`、`iOS App`、`Windows x64 (.zip)`、`Windows ARM64 (.zip)`、`macOS Universal (.dmg)` 5 大产物。
 
+## 各平台最新安装包下载
+
+点击下方直接下载链接可直接获取最新正式版安装包（自动定向至 GitHub Releases 最新版本）：
+
+| 平台 / 芯片架构 | 安装包文件 | 下载链接 (最新) | 说明 |
+| :--- | :--- | :--- | :--- |
+| **macOS (Universal 2)**<br>Apple Silicon (M1~M4) + Intel | `acast-macos-universal.dmg` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-macos-universal.dmg) | 拖拽直接安装，含 `/Applications` 替身与软件图标 |
+| **Windows x86_64**<br>传统 Intel / AMD 64位电脑 | `acast-windows-x64.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-windows-x64.zip) | 解压即用，原生内嵌图标，支持 USB 反控手机 |
+| **Windows ARM64**<br>骁龙 X Elite / Surface ARM / Win11 on ARM | `acast-windows-arm64.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-windows-arm64.zip) | 原生 ARM64 指令集，无模拟损耗 |
+| **Android 手机端**<br>Android 7.0 及以上所有机型 | `acast-android.apk` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-android.apk) | 支持 B站/DLNA 电视投屏 & USB/Wi-Fi 被控 |
+| **iOS 手机端**<br>iPhone (iOS 16.0 及以上) | `acast-ios.zip` | [⬇️ 立即下载](https://github.com/cat-clever/ACast/releases/latest/download/acast-ios.zip) | 包含 ReplayKit 2 广播上传扩展与应用图标 |
+
+> 💡 提示：如需查看版本更新日志或下载历史版本，请访问 [GitHub Releases 页面](https://github.com/cat-clever/ACast/releases)。
+
 ## 开源协议
 
 本项目采用 **[GNU General Public License v3.0 (GPLv3)](LICENSE)** 开源许可证。

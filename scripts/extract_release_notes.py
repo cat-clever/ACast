@@ -9,6 +9,7 @@ def extract_notes(tag, changelog_file="docs/RELEASE_NOTES.md", output_file="curr
     if os.path.isfile(specific_file):
         with open(specific_file, "r", encoding="utf-8") as f:
             content = f.read().strip()
+        content = content.replace("${TAG}", tag)
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(content + "\n")
         print(f"成功从 {specific_file} 读取当前版本发版说明！")

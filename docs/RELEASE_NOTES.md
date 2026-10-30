@@ -13,6 +13,16 @@
    * DMG 镜像根目录下集成指向 `/Applications` 的软链接快捷方式，支持一步拖拽快速安装。
    * 写入标准的 `Info.plist` 与应用图标关联。
 
+### 各平台安装包清单 (v0.1.1)
+
+| 文件名 | 适用平台与架构 | 直接下载链接 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `acast-macos-universal.dmg` | macOS 12+ (Apple Silicon M1~M4 & Intel Mac) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.1/acast-macos-universal.dmg) | Universal 2 架构，含 `/Applications` 拖拽安装快捷方式与统一应用图标 |
+| `acast-windows-x64.zip` | Windows 10/11 (Intel / AMD 64位) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.1/acast-windows-x64.zip) | 解压即用，已内嵌原生 `acast.ico` 软件图标 |
+| `acast-windows-arm64.zip` | Windows 11 on ARM (骁龙 X Elite / Surface ARM) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.1/acast-windows-arm64.zip) | 原生 ARM64 指令集，已内嵌原生 `acast.ico` 软件图标 |
+| `acast-android.apk` | Android 7.0 及以上手机 (通用 APK) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.1/acast-android.apk) | 手机安装，已配置原生启动图标 |
+| `acast-ios.zip` | iPhone (iOS 16.0 及以上) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.1/acast-ios.zip) | 包含 ReplayKit 2 广播上传扩展与应用图标 |
+
 ---
 
 # ACast v0.1.0 发版说明
@@ -42,12 +52,12 @@
 
 ---
 
-## 各平台安装包清单
+## 各平台安装包清单 (v0.1.0)
 
-| 文件名 | 适用平台与架构 | 说明 |
-| :--- | :--- | :--- |
-| `acast-windows-x64.zip` | Windows 10/11 (Intel / AMD 64位) | 解压即用，插 USB 数据线即可反控 Android 手机 |
-| `acast-windows-arm64.zip` | Windows 11 on ARM (骁龙 X Elite / Surface ARM) | 原生 ARM64 指令集，无模拟损耗 |
-| `acast-macos-universal.dmg` | macOS 12+ (Apple Silicon M1~M4 & Intel Mac) | Universal 2 统一架构安装包 |
-| `acast-android.apk` | Android 7.0 及以上手机 (通用 APK) | 手机安装，开启屏幕投屏与电视搜索 |
-| `acast-ios.zip` | iPhone (iOS 16.0 及以上) | 包含 ReplayKit 2 广播上传扩展 |
+| 文件名 | 适用平台与架构 | 直接下载链接 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `acast-windows-x64.zip` | Windows 10/11 (Intel / AMD 64位) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.0/acast-windows-x64.zip) | 解压即用，插 USB 数据线即可反控 Android 手机 |
+| `acast-windows-arm64.zip` | Windows 11 on ARM (骁龙 X Elite / Surface ARM) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.0/acast-windows-arm64.zip) | 原生 ARM64 指令集，无模拟损耗 |
+| `acast-macos-universal.dmg` | macOS 12+ (Apple Silicon M1~M4 & Intel Mac) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.0/acast-macos-universal.dmg) | Universal 2 统一架构安装包 |
+| `acast-android.apk` | Android 7.0 及以上手机 (通用 APK) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.0/acast-android.apk) | 手机安装，开启屏幕投屏与电视搜索 |
+| `acast-ios.zip` | iPhone (iOS 16.0 及以上) | [⬇️ 下载](https://github.com/cat-clever/ACast/releases/download/v0.1.0/acast-ios.zip) | 包含 ReplayKit 2 广播上传扩展 |
