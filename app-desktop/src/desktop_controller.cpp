@@ -24,6 +24,7 @@ DesktopController& DesktopController::GetInstance() {
 
 DesktopController::DesktopController() {
     dlna_controller_ = std::make_unique<acast::dlna::DlnaController>();
+    fastmirror_client_ = std::make_unique<acast::fastmirror::FastMirrorClient>();
 }
 
 DesktopController::~DesktopController() {
@@ -40,6 +41,9 @@ void DesktopController::Init() {
 void DesktopController::Cleanup() {
     if (dlna_controller_) {
         dlna_controller_->StopDiscovery();
+    }
+    if (fastmirror_client_) {
+        fastmirror_client_->Disconnect();
     }
 }
 
@@ -178,24 +182,129 @@ std::vector<acast::adb::AdbDevice> DesktopController::GetUsbDevices() {
     return usb_devices_;
 }
 
-bool DesktopController::SendUsbBack() {
-    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
-    if (devs.empty()) {
-        Log("[反控] 未连接手机，无法触发返回键。");
-        return false;
+void DesktopController::SetFastMirrorCallback(FastMirrorCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fm_cb_ = cb;
+}
+
+void DesktopController::ConnectWifiPhone(const std::string& ip, uint16_t port) {
+    if (ip.empty()) {
+        Log("[局域网直连] 错误：请输入有效的手机局域网 IP 地址！");
+        return;
     }
-    Log("[反控] 触发手机返回键 (KEY_BACK)...");
-    return acast::adb::AdbTunnel::InjectBack(devs[0].serial);
+    Log("[局域网直连] 正在建立 FastMirror 私有协议高速直连: " + ip + ":" + std::to_string(port) + " ...");
+
+    std::thread([this, ip, port]() {
+        bool ok = false;
+        if (fastmirror_client_) {
+            ok = fastmirror_client_->Connect(ip, port, 3000);
+        }
+
+        FastMirrorCallback cb_to_call;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cb_to_call = fm_cb_;
+        }
+
+        if (ok) {
+            Log("[局域网直连] 🎉 成功连接手机 FastMirror 私有协议通道 (" + ip + ":" + std::to_string(port) + ")！通信延迟 < 20ms。");
+            if (cb_to_call) {
+                cb_to_call(true, ip + ":" + std::to_string(port));
+            }
+        } else {
+            Log("[局域网直连] ❌ 连接失败，请确保手机与电脑在同一局域网内，且手机端已开启投屏。");
+            if (cb_to_call) {
+                cb_to_call(false, "");
+            }
+        }
+    }).detach();
+}
+
+void DesktopController::DisconnectWifiPhone() {
+    if (fastmirror_client_) {
+        fastmirror_client_->Disconnect();
+    }
+    Log("[局域网直连] 已断开手机 FastMirror 私有协议直连。");
+
+    FastMirrorCallback cb_to_call;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cb_to_call = fm_cb_;
+    }
+    if (cb_to_call) {
+        cb_to_call(false, "");
+    }
+}
+
+bool DesktopController::IsWifiPhoneConnected() const {
+    return fastmirror_client_ && fastmirror_client_->IsConnected();
+}
+
+std::string DesktopController::GetWifiPhoneAddress() const {
+    if (!fastmirror_client_ || !fastmirror_client_->IsConnected()) return "";
+    return fastmirror_client_->GetConnectedIp() + ":" + std::to_string(fastmirror_client_->GetConnectedPort());
+}
+
+bool DesktopController::SendBackKey() {
+    // 1. 优先局域网 Wi-Fi 直连私有协议通道
+    if (fastmirror_client_ && fastmirror_client_->IsConnected()) {
+        Log("[私有协议反控] 触发返回键 (FastMirror KEY_BACK)...");
+        return fastmirror_client_->SendBack();
+    }
+
+    // 2. 备用 USB ADB 通道
+    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
+    if (!devs.empty()) {
+        Log("[USB ADB 反控] 触发返回键 (KEY_BACK)...");
+        return acast::adb::AdbTunnel::InjectBack(devs[0].serial);
+    }
+
+    Log("[反控] 尚未连接手机！请通过局域网 IP 直连或插入 USB 数据线。");
+    return false;
+}
+
+bool DesktopController::SendHomeKey() {
+    // 1. 优先局域网 Wi-Fi 直连私有协议通道
+    if (fastmirror_client_ && fastmirror_client_->IsConnected()) {
+        Log("[私有协议反控] 触发主页键 (FastMirror KEY_HOME)...");
+        return fastmirror_client_->SendHome();
+    }
+
+    // 2. 备用 USB ADB 通道
+    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
+    if (!devs.empty()) {
+        Log("[USB ADB 反控] 触发主页键 (KEY_HOME)...");
+        return acast::adb::AdbTunnel::InjectHome(devs[0].serial);
+    }
+
+    Log("[反控] 尚未连接手机！请通过局域网 IP 直连或插入 USB 数据线。");
+    return false;
+}
+
+bool DesktopController::SendRecentsKey() {
+    // 1. 优先局域网 Wi-Fi 直连私有协议通道
+    if (fastmirror_client_ && fastmirror_client_->IsConnected()) {
+        Log("[私有协议反控] 触发多任务键 (FastMirror KEY_APP_SWITCH)...");
+        return fastmirror_client_->SendRecents();
+    }
+
+    // 2. 备用 USB ADB 通道
+    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
+    if (!devs.empty()) {
+        Log("[USB ADB 反控] 触发多任务键 (KEYCODE_APP_SWITCH)...");
+        return acast::adb::AdbTunnel::InjectKey(devs[0].serial, 187); // KEYCODE_APP_SWITCH
+    }
+
+    Log("[反控] 尚未连接手机！请通过局域网 IP 直连或插入 USB 数据线。");
+    return false;
+}
+
+bool DesktopController::SendUsbBack() {
+    return SendBackKey();
 }
 
 bool DesktopController::SendUsbHome() {
-    std::vector<acast::adb::AdbDevice> devs = GetUsbDevices();
-    if (devs.empty()) {
-        Log("[反控] 未连接手机，无法触发主页键。");
-        return false;
-    }
-    Log("[反控] 触发手机主页键 (KEY_HOME)...");
-    return acast::adb::AdbTunnel::InjectHome(devs[0].serial);
+    return SendHomeKey();
 }
 
 void DesktopController::SetUpdateCallback(UpdateCallback cb) {

@@ -13,6 +13,10 @@
     NSTableView* tvTableView;
     NSTextField* updateBannerLabel;
     NSButton* updateButton;
+    NSTextField* wifiStatusLabel;
+    NSTextField* ipTextField;
+    NSTextField* portTextField;
+    NSButton* connectWifiBtn;
     NSTextField* usbStatusLabel;
     NSProgressIndicator* updateProgressIndicator;
     NSMutableArray<NSDictionary<NSString*, NSString*>*>* tvDevicesList;
@@ -30,20 +34,20 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    NSRect frame = NSMakeRect(0, 0, 780, 640);
+    NSRect frame = NSMakeRect(0, 0, 780, 690);
     NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
     window = [[NSWindow alloc] initWithContentRect:frame
                                          styleMask:style
                                            backing:NSBackingStoreBuffered
                                              defer:NO];
     [window setTitle:@"ACast 跨平台投屏控制台"];
-    [window setMinSize:NSMakeSize(680, 520)];
+    [window setMinSize:NSMakeSize(680, 560)];
     [window center];
 
     NSView* contentView = [window contentView];
 
     // ==================== 1. 顶部 Header ====================
-    NSTextField* titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 595, 300, 30)];
+    NSTextField* titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 645, 300, 30)];
     [titleLabel setStringValue:@"ACast 跨平台投屏控制端"];
     [titleLabel setFont:[NSFont systemFontOfSize:17 weight:NSFontWeightBold]];
     [titleLabel setBezeled:NO];
@@ -52,7 +56,7 @@
     [titleLabel setSelectable:NO];
     [contentView addSubview:titleLabel];
 
-    NSTextField* versionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(280, 597, 120, 24)];
+    NSTextField* versionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(280, 647, 120, 24)];
     std::string verStr = std::string("v") + acast::updater::AutoUpdater::CURRENT_VERSION;
     [versionLabel setStringValue:[NSString stringWithUTF8String:verStr.c_str()]];
     [versionLabel setFont:[NSFont systemFontOfSize:12 weight:NSFontWeightMedium]];
@@ -63,7 +67,7 @@
     [versionLabel setSelectable:NO];
     [contentView addSubview:versionLabel];
 
-    NSButton* checkUpdateBtn = [[NSButton alloc] initWithFrame:NSMakeRect(640, 595, 115, 30)];
+    NSButton* checkUpdateBtn = [[NSButton alloc] initWithFrame:NSMakeRect(640, 645, 115, 30)];
     [checkUpdateBtn setTitle:@"检查更新"];
     [checkUpdateBtn setBezelStyle:NSBezelStyleRounded];
     [checkUpdateBtn setTarget:self];
@@ -71,7 +75,7 @@
     [contentView addSubview:checkUpdateBtn];
 
     // ==================== 2. 更新横幅 (默认隐藏) ====================
-    updateBannerLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 560, 580, 24)];
+    updateBannerLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 612, 580, 24)];
     [updateBannerLabel setFont:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]];
     [updateBannerLabel setTextColor:[NSColor systemGreenColor]];
     [updateBannerLabel setBezeled:NO];
@@ -80,7 +84,7 @@
     [updateBannerLabel setHidden:YES];
     [contentView addSubview:updateBannerLabel];
 
-    updateButton = [[NSButton alloc] initWithFrame:NSMakeRect(620, 558, 135, 28)];
+    updateButton = [[NSButton alloc] initWithFrame:NSMakeRect(620, 610, 135, 28)];
     [updateButton setTitle:@"原地热更新"];
     [updateButton setBezelStyle:NSBezelStyleRounded];
     [updateButton setTarget:self];
@@ -88,7 +92,7 @@
     [updateButton setHidden:YES];
     [contentView addSubview:updateButton];
 
-    updateProgressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 555, 735, 10)];
+    updateProgressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 607, 735, 10)];
     [updateProgressIndicator setIndeterminate:NO];
     [updateProgressIndicator setMinValue:0.0];
     [updateProgressIndicator setMaxValue:100.0];
@@ -96,44 +100,96 @@
     [updateProgressIndicator setHidden:YES];
     [contentView addSubview:updateProgressIndicator];
 
-    // ==================== 3. USB 手机反控卡片 ====================
-    NSBox* usbBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, 465, 735, 85)];
-    [usbBox setTitle:@"📱 USB 手机连接与高速反控"];
-    [usbBox setTitleFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
+    // ==================== 3. 手机反控中心 (FastMirror 局域网直连 + USB 专线) ====================
+    NSBox* phoneBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, 480, 735, 120)];
+    [phoneBox setTitle:@"📱 手机反控中心 (FastMirror 局域网直连 / USB 专线)"];
+    [phoneBox setTitleFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
 
-    usbStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 20, 420, 28)];
+    // --- 第 1 行：局域网 Wi-Fi IP 直连 ---
+    NSTextField* ipLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 68, 95, 20)];
+    [ipLabel setStringValue:@"局域网手机 IP:"];
+    [ipLabel setFont:[NSFont systemFontOfSize:12]];
+    [ipLabel setBezeled:NO];
+    [ipLabel setDrawsBackground:NO];
+    [ipLabel setEditable:NO];
+    [phoneBox addSubview:ipLabel];
+
+    ipTextField = [[NSTextField alloc] initWithFrame:NSMakeRect(112, 66, 120, 22)];
+    [ipTextField setStringValue:@"192.168.2.3"];
+    [ipTextField setPlaceholderString:@"192.168.x.x"];
+    [ipTextField setFont:[NSFont fontWithName:@"Menlo" size:12] ?: [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular]];
+    [phoneBox addSubview:ipTextField];
+
+    NSTextField* portLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(238, 68, 38, 20)];
+    [portLabel setStringValue:@"端口:"];
+    [portLabel setFont:[NSFont systemFontOfSize:12]];
+    [portLabel setBezeled:NO];
+    [portLabel setDrawsBackground:NO];
+    [portLabel setEditable:NO];
+    [phoneBox addSubview:portLabel];
+
+    portTextField = [[NSTextField alloc] initWithFrame:NSMakeRect(276, 66, 56, 22)];
+    [portTextField setStringValue:@"19999"];
+    [portTextField setFont:[NSFont fontWithName:@"Menlo" size:12] ?: [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular]];
+    [phoneBox addSubview:portTextField];
+
+    connectWifiBtn = [[NSButton alloc] initWithFrame:NSMakeRect(340, 62, 105, 28)];
+    [connectWifiBtn setTitle:@"连接 Wi-Fi"];
+    [connectWifiBtn setBezelStyle:NSBezelStyleRounded];
+    [connectWifiBtn setTarget:self];
+    [connectWifiBtn setAction:@selector(onConnectWifiClicked:)];
+    [phoneBox addSubview:connectWifiBtn];
+
+    wifiStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(455, 67, 265, 20)];
+    [wifiStatusLabel setStringValue:@"Wi-Fi 状态: 未连接 (输入手机IP点击连接)"];
+    [wifiStatusLabel setFont:[NSFont systemFontOfSize:11]];
+    [wifiStatusLabel setTextColor:[NSColor secondaryLabelColor]];
+    [wifiStatusLabel setBezeled:NO];
+    [wifiStatusLabel setDrawsBackground:NO];
+    [wifiStatusLabel setEditable:NO];
+    [phoneBox addSubview:wifiStatusLabel];
+
+    // --- 第 2 行：USB 通道与全局反控快捷键 ---
+    usbStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 18, 300, 24)];
     [usbStatusLabel setStringValue:@"正在检测 USB 连接设备..."];
     [usbStatusLabel setFont:[NSFont systemFontOfSize:12]];
     [usbStatusLabel setBezeled:NO];
     [usbStatusLabel setDrawsBackground:NO];
     [usbStatusLabel setEditable:NO];
-    [usbBox addSubview:usbStatusLabel];
+    [phoneBox addSubview:usbStatusLabel];
 
-    NSButton* refreshUsbBtn = [[NSButton alloc] initWithFrame:NSMakeRect(445, 18, 90, 30)];
+    NSButton* refreshUsbBtn = [[NSButton alloc] initWithFrame:NSMakeRect(320, 15, 85, 28)];
     [refreshUsbBtn setTitle:@"刷新 USB"];
     [refreshUsbBtn setBezelStyle:NSBezelStyleRounded];
     [refreshUsbBtn setTarget:self];
     [refreshUsbBtn setAction:@selector(onRefreshUsbClicked:)];
-    [usbBox addSubview:refreshUsbBtn];
+    [phoneBox addSubview:refreshUsbBtn];
 
-    NSButton* backBtn = [[NSButton alloc] initWithFrame:NSMakeRect(540, 18, 85, 30)];
+    NSButton* backBtn = [[NSButton alloc] initWithFrame:NSMakeRect(410, 15, 95, 28)];
     [backBtn setTitle:@"返回 (Back)"];
     [backBtn setBezelStyle:NSBezelStyleRounded];
     [backBtn setTarget:self];
     [backBtn setAction:@selector(onUsbBackClicked:)];
-    [usbBox addSubview:backBtn];
+    [phoneBox addSubview:backBtn];
 
-    NSButton* homeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(630, 18, 85, 30)];
+    NSButton* homeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(510, 15, 95, 28)];
     [homeBtn setTitle:@"桌面 (Home)"];
     [homeBtn setBezelStyle:NSBezelStyleRounded];
     [homeBtn setTarget:self];
     [homeBtn setAction:@selector(onUsbHomeClicked:)];
-    [usbBox addSubview:homeBtn];
+    [phoneBox addSubview:homeBtn];
 
-    [contentView addSubview:usbBox];
+    NSButton* recentsBtn = [[NSButton alloc] initWithFrame:NSMakeRect(610, 15, 105, 28)];
+    [recentsBtn setTitle:@"任务 (Tasks)"];
+    [recentsBtn setBezelStyle:NSBezelStyleRounded];
+    [recentsBtn setTarget:self];
+    [recentsBtn setAction:@selector(onRecentsClicked:)];
+    [phoneBox addSubview:recentsBtn];
+
+    [contentView addSubview:phoneBox];
 
     // ==================== 4. 局域网大屏设备卡片 ====================
-    NSBox* tvBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, 275, 735, 180)];
+    NSBox* tvBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, 295, 735, 175)];
     [tvBox setTitle:@"📺 局域网大屏设备 (DLNA / Cast / AirPlay)"];
     [tvBox setTitleFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
 
@@ -167,7 +223,7 @@
     [contentView addSubview:tvBox];
 
     // ==================== 5. 底部运行日志视窗 ====================
-    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 240, 200, 20)];
+    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 260, 200, 20)];
     [logTitle setStringValue:@"📋 运行状态与事件日志"];
     [logTitle setFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
     [logTitle setBezeled:NO];
@@ -175,14 +231,14 @@
     [logTitle setEditable:NO];
     [contentView addSubview:logTitle];
 
-    NSButton* clearLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(670, 237, 85, 26)];
+    NSButton* clearLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(670, 257, 85, 26)];
     [clearLogBtn setTitle:@"清空"];
     [clearLogBtn setBezelStyle:NSBezelStyleRounded];
     [clearLogBtn setTarget:self];
     [clearLogBtn setAction:@selector(onClearLogClicked:)];
     [contentView addSubview:clearLogBtn];
 
-    NSScrollView* logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, 735, 215)];
+    NSScrollView* logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 20, 735, 235)];
     [logScrollView setHasVerticalScroller:YES];
     [logScrollView setBorderType:NSBezelBorder];
 
@@ -213,6 +269,23 @@
         });
     });
 
+    ctl.SetFastMirrorCallback([weakSelf](bool connected, std::string addr) {
+        NSString* addrStr = [NSString stringWithUTF8String:addr.c_str()] ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AppDelegate* strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf->wifiStatusLabel || !strongSelf->connectWifiBtn) return;
+            if (connected) {
+                [strongSelf->wifiStatusLabel setStringValue:[NSString stringWithFormat:@"✓ 已直连: %@ (私有协议延迟<20ms)", addrStr]];
+                [strongSelf->wifiStatusLabel setTextColor:[NSColor systemGreenColor]];
+                [strongSelf->connectWifiBtn setTitle:@"断开直连"];
+            } else {
+                [strongSelf->wifiStatusLabel setStringValue:@"Wi-Fi 状态: 未连接 (输入手机IP点击连接)"];
+                [strongSelf->wifiStatusLabel setTextColor:[NSColor secondaryLabelColor]];
+                [strongSelf->connectWifiBtn setTitle:@"连接 Wi-Fi"];
+            }
+        });
+    });
+
     ctl.SetTvDeviceCallback([weakSelf](std::vector<acast::dlna::DlnaDevice> devices) {
         NSMutableArray* array = [[NSMutableArray alloc] initWithCapacity:devices.size()];
         for (const auto& dev : devices) {
@@ -233,14 +306,14 @@
         BOOL empty = devices.empty();
         NSString* desc = nil;
         if (!empty) {
-            std::string d = "已连接: " + devices[0].model + " (" + devices[0].serial + ") [高速反控通道已建立]";
+            std::string d = "USB 已连接: " + devices[0].model + " (" + devices[0].serial + ") [通道已就绪]";
             desc = [NSString stringWithUTF8String:d.c_str()];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf || !strongSelf->usbStatusLabel) return;
             if (empty) {
-                [strongSelf->usbStatusLabel setStringValue:@"未检测到 USB 手机 (请开启 USB 调试并插入数据线)"];
+                [strongSelf->usbStatusLabel setStringValue:@"USB 状态: 未检测到手机 (支持无线或插线)"];
                 [strongSelf->usbStatusLabel setTextColor:[NSColor secondaryLabelColor]];
             } else {
                 [strongSelf->usbStatusLabel setStringValue:desc ?: @""];
@@ -308,16 +381,32 @@
     });
 }
 
+- (void)onConnectWifiClicked:(id)sender {
+    auto& ctl = acast::desktop::DesktopController::GetInstance();
+    if (ctl.IsWifiPhoneConnected()) {
+        ctl.DisconnectWifiPhone();
+    } else {
+        NSString* ip = [ipTextField stringValue];
+        NSString* portStr = [portTextField stringValue];
+        uint16_t port = [portStr intValue] > 0 ? (uint16_t)[portStr intValue] : 19999;
+        ctl.ConnectWifiPhone([ip UTF8String], port);
+    }
+}
+
 - (void)onRefreshUsbClicked:(id)sender {
     acast::desktop::DesktopController::GetInstance().RefreshUsbDevices();
 }
 
 - (void)onUsbBackClicked:(id)sender {
-    acast::desktop::DesktopController::GetInstance().SendUsbBack();
+    acast::desktop::DesktopController::GetInstance().SendBackKey();
 }
 
 - (void)onUsbHomeClicked:(id)sender {
-    acast::desktop::DesktopController::GetInstance().SendUsbHome();
+    acast::desktop::DesktopController::GetInstance().SendHomeKey();
+}
+
+- (void)onRecentsClicked:(id)sender {
+    acast::desktop::DesktopController::GetInstance().SendRecentsKey();
 }
 
 - (void)onRefreshTvClicked:(id)sender {

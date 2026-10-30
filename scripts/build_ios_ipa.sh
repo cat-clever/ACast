@@ -10,7 +10,7 @@ SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
 echo "[1/6] 成功加载 iOS SDK: ${SDK_PATH}"
 
 TARGET="arm64-apple-ios16.0"
-VERSION="${1:-0.2.1}"
+VERSION="${1:-0.2.2}"
 
 # 2. 清理并初始化 Payload 目录结构
 echo "[2/6] 创建标准 iOS 应用 Bundle 结构..."
@@ -161,3 +161,4 @@ codesign --force --sign - --timestamp=none Payload/ACast.app
 zip -qr acast-ios.ipa Payload
 
 echo "✅ 成功生成补签名专用 iOS 安装包: acast-ios.ipa ($(ls -lh acast-ios.ipa | awk '{print $5}'))"
+

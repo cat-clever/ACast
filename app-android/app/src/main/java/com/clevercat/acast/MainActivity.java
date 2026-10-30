@@ -282,7 +282,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateStatusUi() {
         if (isCapturing) {
-            tvStatus.setText("✓ 投屏已开启：请点击下方大屏设备即可开始投屏 (支持 USB/Wi-Fi 反控)");
+            String ip = getLocalIpAddress(this);
+            tvStatus.setText("✓ 投屏已开启 (本机IP: " + ip + ":19999)\n请点击下方大屏投屏；控制端可输入此IP:19999直连反控");
             tvStatus.setTextColor(0xFF2E7D32); // 绿色
             if (tvDeviceHeader != null) {
                 tvDeviceHeader.setText("3. 点击大屏设备开始投屏 (✓ 投屏服务已就绪):");

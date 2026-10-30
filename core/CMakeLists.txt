@@ -8,6 +8,7 @@ include_directories(include)
 
 set(CORE_SOURCES
     src/fastmirror_protocol.cpp
+    src/fastmirror_client.cpp
     src/dlna_controller.cpp
     src/http_ts_server.cpp
     src/adb_tunnel.cpp
@@ -16,6 +17,7 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
     include/fastmirror_protocol.h
+    include/fastmirror_client.h
     include/dlna_controller.h
     include/http_ts_server.h
     include/adb_tunnel.h

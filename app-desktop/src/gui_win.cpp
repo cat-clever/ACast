@@ -21,12 +21,18 @@
 #define IDC_LIST_TV            1009
 #define IDC_LABEL_USB_STATUS   1010
 #define IDC_LABEL_UPDATE_INFO  1011
+#define IDC_BTN_CONNECT_WIFI   1012
+#define IDC_EDIT_WIFI_IP       1013
+#define IDC_EDIT_WIFI_PORT     1014
+#define IDC_LABEL_WIFI_STATUS  1015
+#define IDC_BTN_USB_RECENTS    1016
 
 #define WM_ACAST_LOG           (WM_USER + 101)
 #define WM_ACAST_TV_UPDATE     (WM_USER + 102)
 #define WM_ACAST_USB_UPDATE    (WM_USER + 103)
 #define WM_ACAST_UPDATE_INFO   (WM_USER + 104)
 #define WM_ACAST_UPDATE_PROG   (WM_USER + 105)
+#define WM_ACAST_FM_UPDATE     (WM_USER + 106)
 
 static HWND g_hWnd = NULL;
 static HWND g_hEditLog = NULL;
@@ -34,6 +40,10 @@ static HWND g_hListTv = NULL;
 static HWND g_hLabelUsb = NULL;
 static HWND g_hLabelUpdate = NULL;
 static HWND g_hBtnUpdate = NULL;
+static HWND g_hEditWifiIp = NULL;
+static HWND g_hEditWifiPort = NULL;
+static HWND g_hBtnConnectWifi = NULL;
+static HWND g_hLabelWifi = NULL;
 static HFONT g_hFontNormal = NULL;
 static HFONT g_hFontBold = NULL;
 static HFONT g_hFontMono = NULL;
@@ -62,12 +72,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 std::string* p = new std::string(status + " (" + std::to_string(progress) + "%)");
                 PostMessage(g_hWnd, WM_ACAST_UPDATE_PROG, (WPARAM)progress, (LPARAM)p);
             });
+        } else if (id == IDC_BTN_CONNECT_WIFI) {
+            auto& ctl = acast::desktop::DesktopController::GetInstance();
+            if (ctl.IsWifiPhoneConnected()) {
+                ctl.DisconnectWifiPhone();
+            } else {
+                wchar_t ipBuf[64] = {0};
+                wchar_t portBuf[16] = {0};
+                GetWindowTextW(g_hEditWifiIp, ipBuf, 64);
+                GetWindowTextW(g_hEditWifiPort, portBuf, 16);
+                int port = _wtoi(portBuf);
+                if (port <= 0) port = 19999;
+                char utf8Ip[128] = {0};
+                WideCharToMultiByte(CP_UTF8, 0, ipBuf, -1, utf8Ip, sizeof(utf8Ip), NULL, NULL);
+                ctl.ConnectWifiPhone(utf8Ip, (uint16_t)port);
+            }
         } else if (id == IDC_BTN_REFRESH_USB) {
             acast::desktop::DesktopController::GetInstance().RefreshUsbDevices();
         } else if (id == IDC_BTN_USB_BACK) {
-            acast::desktop::DesktopController::GetInstance().SendUsbBack();
+            acast::desktop::DesktopController::GetInstance().SendBackKey();
         } else if (id == IDC_BTN_USB_HOME) {
-            acast::desktop::DesktopController::GetInstance().SendUsbHome();
+            acast::desktop::DesktopController::GetInstance().SendHomeKey();
+        } else if (id == IDC_BTN_USB_RECENTS) {
+            acast::desktop::DesktopController::GetInstance().SendRecentsKey();
         } else if (id == IDC_BTN_REFRESH_TV) {
             acast::desktop::DesktopController::GetInstance().RefreshTvDevices();
         } else if (id == IDC_BTN_CLEAR_LOG) {
@@ -86,6 +113,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             SendMessageW(g_hEditLog, WM_VSCROLL, SB_BOTTOM, 0);
             delete pStr;
         }
+        break;
+    }
+
+    case WM_ACAST_FM_UPDATE: {
+        bool connected = (wParam != 0);
+        std::string* pAddr = reinterpret_cast<std::string*>(lParam);
+        if (g_hLabelWifi && g_hBtnConnectWifi) {
+            if (connected && pAddr) {
+                std::string text = "✓ 已直连: " + *pAddr + " (私有协议延迟<20ms)";
+                SetWindowTextW(g_hLabelWifi, Utf8ToWide(text).c_str());
+                SetWindowTextW(g_hBtnConnectWifi, L"断开直连");
+            } else {
+                SetWindowTextW(g_hLabelWifi, L"Wi-Fi 状态: 未连接 (输入手机IP点击连接)");
+                SetWindowTextW(g_hBtnConnectWifi, L"连接 Wi-Fi");
+            }
+        }
+        if (pAddr) delete pAddr;
         break;
     }
 
@@ -116,9 +160,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (g_hLabelUsb) {
             auto devs = acast::desktop::DesktopController::GetInstance().GetUsbDevices();
             if (devs.empty()) {
-                SetWindowTextW(g_hLabelUsb, L"未检测到 USB 手机 (请开启 USB 调试并插入数据线)");
+                SetWindowTextW(g_hLabelUsb, L"USB 状态: 未检测到手机 (支持无线或插线)");
             } else {
-                std::string desc = "已连接: " + devs[0].model + " (" + devs[0].serial + ") [高速反控通道已建立]";
+                std::string desc = "USB 已连接: " + devs[0].model + " (" + devs[0].serial + ") [通道已就绪]";
                 SetWindowTextW(g_hLabelUsb, Utf8ToWide(desc).c_str());
             }
         }
@@ -187,7 +231,7 @@ int RunDesktopApp(int argc, char* argv[]) {
         CLASS_NAME,
         L"ACast 跨平台投屏控制台",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 800, 680,
+        CW_USEDEFAULT, CW_USEDEFAULT, 800, 720,
         NULL, NULL, hInstance, NULL
     );
 
@@ -215,33 +259,56 @@ int RunDesktopApp(int argc, char* argv[]) {
     g_hBtnUpdate = CreateWindowExW(0, L"BUTTON", L"原地热更新", WS_CHILD | BS_PUSHBUTTON, 650, 48, 110, 26, g_hWnd, (HMENU)IDC_BTN_PERFORM_UPDATE, hInstance, NULL);
     SendMessageW(g_hBtnUpdate, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    // 3. USB 手机反控 GroupBox
-    HWND hBoxUsb = CreateWindowExW(0, L"BUTTON", L"📱 USB 手机连接与高速反控", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 80, 740, 85, g_hWnd, NULL, hInstance, NULL);
-    SendMessageW(hBoxUsb, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
+    // 3. 手机反控中心 (FastMirror 局域网直连 / USB 专线) GroupBox
+    HWND hBoxPhone = CreateWindowExW(0, L"BUTTON", L"📱 手机反控中心 (FastMirror 局域网直连 / USB 专线)", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 80, 740, 115, g_hWnd, NULL, hInstance, NULL);
+    SendMessageW(hBoxPhone, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
-    g_hLabelUsb = CreateWindowExW(0, L"STATIC", L"正在检测 USB 手机...", WS_CHILD | WS_VISIBLE | SS_LEFT, 35, 112, 410, 22, g_hWnd, (HMENU)IDC_LABEL_USB_STATUS, hInstance, NULL);
+    // --- 第 1 行：局域网 Wi-Fi IP 直连 ---
+    HWND hLabelIp = CreateWindowExW(0, L"STATIC", L"局域网手机 IP:", WS_CHILD | WS_VISIBLE | SS_LEFT, 35, 108, 95, 20, g_hWnd, NULL, hInstance, NULL);
+    SendMessageW(hLabelIp, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+    g_hEditWifiIp = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"192.168.2.3", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 135, 106, 120, 24, g_hWnd, (HMENU)IDC_EDIT_WIFI_IP, hInstance, NULL);
+    SendMessageW(g_hEditWifiIp, WM_SETFONT, (WPARAM)g_hFontMono, TRUE);
+
+    HWND hLabelPort = CreateWindowExW(0, L"STATIC", L"端口:", WS_CHILD | WS_VISIBLE | SS_LEFT, 265, 108, 38, 20, g_hWnd, NULL, hInstance, NULL);
+    SendMessageW(hLabelPort, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+    g_hEditWifiPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"19999", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 305, 106, 55, 24, g_hWnd, (HMENU)IDC_EDIT_WIFI_PORT, hInstance, NULL);
+    SendMessageW(g_hEditWifiPort, WM_SETFONT, (WPARAM)g_hFontMono, TRUE);
+
+    g_hBtnConnectWifi = CreateWindowExW(0, L"BUTTON", L"连接 Wi-Fi", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 368, 104, 95, 28, g_hWnd, (HMENU)IDC_BTN_CONNECT_WIFI, hInstance, NULL);
+    SendMessageW(g_hBtnConnectWifi, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+    g_hLabelWifi = CreateWindowExW(0, L"STATIC", L"Wi-Fi 状态: 未连接 (输入手机IP点击连接)", WS_CHILD | WS_VISIBLE | SS_LEFT, 472, 108, 275, 20, g_hWnd, (HMENU)IDC_LABEL_WIFI_STATUS, hInstance, NULL);
+    SendMessageW(g_hLabelWifi, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+    // --- 第 2 行：USB 状态与反控按键 ---
+    g_hLabelUsb = CreateWindowExW(0, L"STATIC", L"正在检测 USB 手机...", WS_CHILD | WS_VISIBLE | SS_LEFT, 35, 150, 275, 22, g_hWnd, (HMENU)IDC_LABEL_USB_STATUS, hInstance, NULL);
     SendMessageW(g_hLabelUsb, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    HWND hBtnRefUsb = CreateWindowExW(0, L"BUTTON", L"刷新 USB", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 460, 108, 90, 28, g_hWnd, (HMENU)IDC_BTN_REFRESH_USB, hInstance, NULL);
+    HWND hBtnRefUsb = CreateWindowExW(0, L"BUTTON", L"刷新 USB", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 315, 146, 85, 28, g_hWnd, (HMENU)IDC_BTN_REFRESH_USB, hInstance, NULL);
     SendMessageW(hBtnRefUsb, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    HWND hBtnBack = CreateWindowExW(0, L"BUTTON", L"返回 (Back)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 560, 108, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_BACK, hInstance, NULL);
+    HWND hBtnBack = CreateWindowExW(0, L"BUTTON", L"返回 (Back)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 408, 146, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_BACK, hInstance, NULL);
     SendMessageW(hBtnBack, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    HWND hBtnHome = CreateWindowExW(0, L"BUTTON", L"桌面 (Home)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 665, 108, 85, 28, g_hWnd, (HMENU)IDC_BTN_USB_HOME, hInstance, NULL);
+    HWND hBtnHome = CreateWindowExW(0, L"BUTTON", L"桌面 (Home)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 510, 146, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_HOME, hInstance, NULL);
     SendMessageW(hBtnHome, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
+    HWND hBtnRecents = CreateWindowExW(0, L"BUTTON", L"任务 (Tasks)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 612, 146, 100, 28, g_hWnd, (HMENU)IDC_BTN_USB_RECENTS, hInstance, NULL);
+    SendMessageW(hBtnRecents, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
     // 4. 局域网大屏设备 GroupBox
-    HWND hBoxTv = CreateWindowExW(0, L"BUTTON", L"📺 局域网大屏设备 (DLNA / Cast / AirPlay)", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 175, 740, 185, g_hWnd, NULL, hInstance, NULL);
+    HWND hBoxTv = CreateWindowExW(0, L"BUTTON", L"📺 局域网大屏设备 (DLNA / Cast / AirPlay)", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 205, 740, 175, g_hWnd, NULL, hInstance, NULL);
     SendMessageW(hBoxTv, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
-    HWND hBtnRefTv = CreateWindowExW(0, L"BUTTON", L"搜索大屏", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 650, 195, 100, 28, g_hWnd, (HMENU)IDC_BTN_REFRESH_TV, hInstance, NULL);
+    HWND hBtnRefTv = CreateWindowExW(0, L"BUTTON", L"搜索大屏", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 650, 225, 100, 28, g_hWnd, (HMENU)IDC_BTN_REFRESH_TV, hInstance, NULL);
     SendMessageW(hBtnRefTv, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
     g_hListTv = CreateWindowExW(
         WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-        35, 230, 715, 115, g_hWnd, (HMENU)IDC_LIST_TV, hInstance, NULL
+        35, 260, 715, 105, g_hWnd, (HMENU)IDC_LIST_TV, hInstance, NULL
     );
     SendMessageW(g_hListTv, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     SendMessageW(g_hListTv, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
@@ -259,16 +326,16 @@ int RunDesktopApp(int argc, char* argv[]) {
     SendMessageW(g_hListTv, LVM_INSERTCOLUMNW, 1, (LPARAM)&col2);
 
     // 5. 底部运行日志 GroupBox
-    HWND hBoxLog = CreateWindowExW(0, L"BUTTON", L"📋 运行状态与事件日志", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 370, 740, 250, g_hWnd, NULL, hInstance, NULL);
+    HWND hBoxLog = CreateWindowExW(0, L"BUTTON", L"📋 运行状态与事件日志", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 20, 390, 740, 265, g_hWnd, NULL, hInstance, NULL);
     SendMessageW(hBoxLog, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
-    HWND hBtnClear = CreateWindowExW(0, L"BUTTON", L"清空", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 675, 388, 75, 24, g_hWnd, (HMENU)IDC_BTN_CLEAR_LOG, hInstance, NULL);
+    HWND hBtnClear = CreateWindowExW(0, L"BUTTON", L"清空", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 675, 408, 75, 24, g_hWnd, (HMENU)IDC_BTN_CLEAR_LOG, hInstance, NULL);
     SendMessageW(hBtnClear, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
     g_hEditLog = CreateWindowExW(
         WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-        35, 418, 715, 188, g_hWnd, (HMENU)IDC_EDIT_LOG, hInstance, NULL
+        35, 438, 715, 202, g_hWnd, (HMENU)IDC_EDIT_LOG, hInstance, NULL
     );
     SendMessageW(g_hEditLog, WM_SETFONT, (WPARAM)g_hFontMono, TRUE);
 
@@ -279,6 +346,13 @@ int RunDesktopApp(int argc, char* argv[]) {
         if (g_hWnd) {
             std::string* p = new std::string(line);
             PostMessage(g_hWnd, WM_ACAST_LOG, 0, (LPARAM)p);
+        }
+    });
+
+    ctl.SetFastMirrorCallback([](bool connected, std::string addr) {
+        if (g_hWnd) {
+            std::string* p = new std::string(addr);
+            PostMessage(g_hWnd, WM_ACAST_FM_UPDATE, connected ? 1 : 0, (LPARAM)p);
         }
     });
 

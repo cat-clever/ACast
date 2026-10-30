@@ -58,14 +58,23 @@ public class FastMirrorSender {
         serverThread.start();
     }
 
+    private static boolean readFully(InputStream in, byte[] buffer, int len) throws Exception {
+        int total = 0;
+        while (total < len) {
+            int n = in.read(buffer, total, len - total);
+            if (n < 0) return false;
+            total += n;
+        }
+        return true;
+    }
+
     private void handleIncomingControl(Socket client) {
         try {
             InputStream in = client.getInputStream();
             byte[] headerBuf = new byte[16];
 
             while (isRunning && !client.isClosed()) {
-                int read = in.read(headerBuf);
-                if (read < 16) break;
+                if (!readFully(in, headerBuf, 16)) break;
 
                 ByteBuffer bb = ByteBuffer.wrap(headerBuf).order(ByteOrder.BIG_ENDIAN);
                 short magic = bb.getShort();
@@ -78,8 +87,7 @@ public class FastMirrorSender {
 
                 byte[] payload = new byte[payloadLen];
                 if (payloadLen > 0) {
-                    int n = in.read(payload);
-                    if (n < payloadLen) break;
+                    if (!readFully(in, payload, payloadLen)) break;
                 }
 
                 // 处理反向控制触控与按键指令
