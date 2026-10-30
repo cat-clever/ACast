@@ -83,15 +83,50 @@ jobs:
         run: |
           file build/app-desktop/ACast.app/Contents/MacOS/ACast || file build/app-desktop/acast_desktop
 
-      - name: 打包 macOS 产物为 DMG
+      - name: 打包 macOS 产物为 DMG (包含拖拽安装快捷方式与统一图标)
         run: |
           mkdir -p dist-macos
           if [ -d "build/app-desktop/ACast.app" ]; then
             cp -R build/app-desktop/ACast.app dist-macos/
           else
-            cp build/app-desktop/acast_desktop dist-macos/ACast
+            mkdir -p dist-macos/ACast.app/Contents/MacOS
+            cp build/app-desktop/acast_desktop dist-macos/ACast.app/Contents/MacOS/ACast
+            chmod +x dist-macos/ACast.app/Contents/MacOS/ACast
           fi
-          cp README.md dist-macos/
+
+          mkdir -p dist-macos/ACast.app/Contents/Resources
+          cp app-desktop/resources/acast.icns dist-macos/ACast.app/Contents/Resources/acast.icns
+
+          cat << 'EOF' > dist-macos/ACast.app/Contents/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>ACast</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.catclever.acast</string>
+              <key>CFBundleName</key>
+              <string>ACast</string>
+              <key>CFBundleDisplayName</key>
+              <string>ACast</string>
+              <key>CFBundleVersion</key>
+              <string>0.1.1</string>
+              <key>CFBundleShortVersionString</key>
+              <string>0.1.1</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleIconFile</key>
+              <string>acast.icns</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          ln -s /Applications dist-macos/Applications
           hdiutil create -volname "ACast" -srcfolder dist-macos -ov -format UDZO acast-macos-universal.dmg
 
       - name: 上传 macOS Universal 产物

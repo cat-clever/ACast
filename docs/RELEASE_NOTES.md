@@ -1,3 +1,20 @@
+# ACast 发版说明
+
+## v0.1.1 更新日志 (最新)
+
+1. **统一各端高分辨率软件图标**：
+   * 视觉规范：现代圆角渐变背景 + 大屏电视投屏外框 + 无线声波 + 移动手机端 Cast 图标。
+   * macOS：原生 1024x1024 多尺寸标准 `acast.icns`。
+   * Windows：原生高分辨率多尺寸 `acast.ico`（嵌入 `.exe` PE 资源区）。
+   * Android：全套 `mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}` 启动图标。
+   * iOS：标准 1024x1024 `AppIcon.png`。
+2. **优化 macOS DMG 安装体验**：
+   * 移除 DMG 内冗余的 `README`。
+   * DMG 镜像根目录下集成指向 `/Applications` 的软链接快捷方式，支持一步拖拽快速安装。
+   * 写入标准的 `Info.plist` 与应用图标关联。
+
+---
+
 # ACast v0.1.0 发版说明
 
 跨平台主动投屏与反向控制客户端（支持 B站/DLNA 电视投屏 & Windows/macOS 极低延迟 USB/Wi-Fi 音画反控）。
