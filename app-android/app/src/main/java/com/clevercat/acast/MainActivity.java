@@ -365,27 +365,31 @@ public class MainActivity extends AppCompatActivity {
                         Toast.makeText(MainActivity.this, "发现新版本 " + latestVersion + "，正在后台直接下载更新...", Toast.LENGTH_LONG).show();
                         AutoUpdater.downloadAndInstall(MainActivity.this, downloadUrl, new AutoUpdater.UpdateCallback() {
                             @Override
-                            public void onDownloadProgress(int percent) {
-                                if (percent % 25 == 0) {
-                                    Toast.makeText(MainActivity.this, "安装包下载中: " + percent + "%", Toast.LENGTH_SHORT).show();
-                                }
+                            public void onCheckResult(boolean h, String v, String d) {}
+
+                            @Override
+                            public void onDownloadProgress(int progress, String message) {
+                                runOnUiThread(() -> tvStatus.setText("【更新中】" + message));
                             }
 
                             @Override
                             public void onError(String error) {
-                                runOnUiThread(() -> Toast.makeText(MainActivity.this, "自动下载更新失败: " + error, Toast.LENGTH_LONG).show());
+                                runOnUiThread(() -> Toast.makeText(MainActivity.this, error, Toast.LENGTH_SHORT).show());
                             }
                         });
                     } else if (userTriggered) {
-                        Toast.makeText(MainActivity.this, "当前已是最新版本 (v0.2.8)！", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(MainActivity.this, "当前已是最新版本！", Toast.LENGTH_SHORT).show();
                     }
                 });
             }
 
             @Override
+            public void onDownloadProgress(int progress, String message) {}
+
+            @Override
             public void onError(String error) {
                 if (userTriggered) {
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "检查更新失败: " + error, Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, error, Toast.LENGTH_SHORT).show());
                 }
             }
         });
