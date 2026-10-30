@@ -388,7 +388,7 @@ void DesktopController::PerformUpdateAsync(ProgressCallback progress_cb) {
         return;
     }
 
-    Log("[更新] 开始原地热更新: " + info.latest_version + "...");
+    Log("[更新] 开始更新: " + info.latest_version + "...");
     std::thread([this, info, progress_cb]() {
         try {
             bool ok = acast::updater::AutoUpdater::PerformInPlaceUpdate(info, [this, progress_cb](const std::string& status, int progress) {

@@ -318,7 +318,7 @@ bool AutoUpdater::PerformInPlaceUpdate(const UpdateInfo& info, const std::functi
 
 #if defined(__APPLE__)
 bool AutoUpdater::ApplyMacOsUpdate(const std::string& dmg_path, const std::function<void(const std::string& status, int progress)>& cb) {
-    if (cb) cb("正在直接挂载 DMG 并执行原地热更新...", 75);
+    if (cb) cb("正在直接挂载 DMG 并执行更新...", 75);
 
     std::string cache_dir = GetUpdateCacheDir();
     std::string mount_dir = cache_dir + "/dmg_mnt";

@@ -198,7 +198,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (pInfo && g_hLabelUpdate && g_hBtnUpdate) {
             if (pInfo->has_update) {
                 std::string banner = "🎉 发现新版本: v" + pInfo->latest_version + " (当前: v" +
-                                     acast::updater::AutoUpdater::CURRENT_VERSION + ") 点击【原地热更新】自动升级！";
+                                     acast::updater::AutoUpdater::CURRENT_VERSION + ") 点击【更新】自动升级！";
                 SetWindowTextW(g_hLabelUpdate, Utf8ToWide(banner).c_str());
                 ShowWindow(g_hLabelUpdate, SW_SHOW);
                 ShowWindow(g_hBtnUpdate, SW_SHOW);
@@ -271,7 +271,7 @@ int RunDesktopApp(int argc, char* argv[]) {
     g_hLabelUpdate = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT, 20, 50, 615, 22, g_hWnd, (HMENU)IDC_LABEL_UPDATE_INFO, hInstance, NULL);
     SendMessageW(g_hLabelUpdate, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
-    g_hBtnUpdate = CreateWindowExW(0, L"BUTTON", L"原地热更新", WS_CHILD | BS_PUSHBUTTON, 650, 48, 110, 26, g_hWnd, (HMENU)IDC_BTN_PERFORM_UPDATE, hInstance, NULL);
+    g_hBtnUpdate = CreateWindowExW(0, L"BUTTON", L"更新", WS_CHILD | BS_PUSHBUTTON, 670, 48, 90, 26, g_hWnd, (HMENU)IDC_BTN_PERFORM_UPDATE, hInstance, NULL);
     SendMessageW(g_hBtnUpdate, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
     // 3. 手机反控中心 GroupBox

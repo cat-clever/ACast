@@ -6,6 +6,16 @@
 #include "auto_updater.h"
 #include <vector>
 #include <string>
+#include <memory>
+
+static NSString* SafeStr(const std::string& str) {
+    if (str.empty()) return @"";
+    NSString* ns = [NSString stringWithUTF8String:str.c_str()];
+    if (!ns) {
+        ns = [[NSString alloc] initWithBytes:str.data() length:str.size() encoding:NSISOLatin1StringEncoding] ?: @"";
+    }
+    return ns;
+}
 
 @interface AppDelegate : NSObject <NSApplicationDelegate> {
     NSWindow* window;
@@ -50,7 +60,7 @@
 
     NSTextField* versionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(280, 647, 120, 24)];
     std::string verStr = std::string("v") + acast::updater::AutoUpdater::CURRENT_VERSION;
-    [versionLabel setStringValue:[NSString stringWithUTF8String:verStr.c_str()]];
+    [versionLabel setStringValue:SafeStr(verStr)];
     [versionLabel setFont:[NSFont systemFontOfSize:12 weight:NSFontWeightMedium]];
     [versionLabel setTextColor:[NSColor secondaryLabelColor]];
     [versionLabel setBezeled:NO];
@@ -67,7 +77,7 @@
     [contentView addSubview:checkUpdateBtn];
 
     // ==================== 2. 更新横幅 (默认隐藏) ====================
-    updateBannerLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 612, 580, 24)];
+    updateBannerLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 612, 635, 24)];
     [updateBannerLabel setFont:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]];
     [updateBannerLabel setTextColor:[NSColor systemGreenColor]];
     [updateBannerLabel setBezeled:NO];
@@ -76,8 +86,8 @@
     [updateBannerLabel setHidden:YES];
     [contentView addSubview:updateBannerLabel];
 
-    updateButton = [[NSButton alloc] initWithFrame:NSMakeRect(620, 610, 135, 28)];
-    [updateButton setTitle:@"原地热更新"];
+    updateButton = [[NSButton alloc] initWithFrame:NSMakeRect(665, 610, 90, 28)];
+    [updateButton setTitle:@"更新"];
     [updateButton setBezelStyle:NSBezelStyleRounded];
     [updateButton setTarget:self];
     [updateButton setAction:@selector(onPerformUpdateClicked:)];
@@ -202,7 +212,7 @@
 
     __weak typeof(self) weakSelf = self;
     ctl.SetLogCallback([weakSelf](const std::string& line) {
-        NSString* text = [NSString stringWithUTF8String:line.c_str()] ?: @"";
+        NSString* text = SafeStr(line);
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf) return;
@@ -212,8 +222,7 @@
         });
     });
 
-    ctl.SetFastMirrorCallback([weakSelf](bool connected, const std::string& address) {
-        NSString* addrStr = [NSString stringWithUTF8String:address.c_str()] ?: @"";
+    ctl.SetFastMirrorCallback([weakSelf](bool connected, std::string address) {
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf) return;
@@ -229,39 +238,42 @@
         });
     });
 
-    ctl.SetDiscoveredPhonesCallback([weakSelf](const std::vector<acast::discovery::DiscoveredPhone>& phones) {
+    // 采用 make_shared 延长 C++ 数据的生命周期，彻底杜绝 GCD 异步访问悬垂野指针
+    ctl.SetDiscoveredPhonesCallback([weakSelf](std::vector<acast::discovery::DiscoveredPhone> phones) {
+        auto pPhones = std::make_shared<std::vector<acast::discovery::DiscoveredPhone>>(std::move(phones));
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf) return;
-            strongSelf->cachedWifiPhones = phones;
+            strongSelf->cachedWifiPhones = *pPhones;
             [strongSelf reloadDevicePopUp];
         });
     });
 
-    ctl.SetUsbDeviceCallback([weakSelf](const std::vector<acast::adb::AdbDevice>& devices) {
+    ctl.SetUsbDeviceCallback([weakSelf](std::vector<acast::adb::AdbDevice> devices) {
+        auto pDevs = std::make_shared<std::vector<acast::adb::AdbDevice>>(std::move(devices));
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf) return;
-            strongSelf->cachedUsbDevices = devices;
+            strongSelf->cachedUsbDevices = *pDevs;
             [strongSelf reloadDevicePopUp];
 
-            if (devices.empty()) {
+            if (pDevs->empty()) {
                 [strongSelf->usbStatusLabel setStringValue:@"USB 状态: 未检测到手机 (支持无线或插线)"];
             } else {
-                std::string desc = "USB 已连接: " + devices[0].model + " (" + devices[0].serial + ") [通道已就绪]";
-                [strongSelf->usbStatusLabel setStringValue:[NSString stringWithUTF8String:desc.c_str()]];
+                std::string desc = "USB 已连接: " + (*pDevs)[0].model + " (" + (*pDevs)[0].serial + ") [通道已就绪]";
+                [strongSelf->usbStatusLabel setStringValue:SafeStr(desc)];
             }
         });
     });
 
-    ctl.SetUpdateCallback([weakSelf](const acast::updater::UpdateInfo& info) {
+    ctl.SetUpdateCallback([weakSelf](acast::updater::UpdateInfo info) {
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf) return;
             if (info.has_update) {
-                NSString* banner = [NSString stringWithFormat:@"🎉 发现新版本: %@ (当前: %@) 点击【原地热更新】自动升级！",
-                                    [NSString stringWithUTF8String:info.latest_version.c_str()],
-                                    [NSString stringWithUTF8String:acast::updater::AutoUpdater::CURRENT_VERSION]];
+                NSString* banner = [NSString stringWithFormat:@"🎉 发现新版本: %@ (当前: %@) 点击【更新】自动升级！",
+                                    SafeStr(info.latest_version),
+                                    SafeStr(acast::updater::AutoUpdater::CURRENT_VERSION)];
                 [strongSelf->updateBannerLabel setStringValue:banner];
                 [strongSelf->updateBannerLabel setHidden:NO];
                 [strongSelf->updateButton setHidden:NO];
@@ -281,28 +293,35 @@
 
     // 1. 添加自动发现的局域网 Wi-Fi 手机
     for (const auto& phone : cachedWifiPhones) {
-        NSString* title = [NSString stringWithFormat:@"📱 %@ (%@)",
-                           [NSString stringWithUTF8String:phone.name.c_str()],
-                           [NSString stringWithUTF8String:phone.ip.c_str()]];
+        NSString* nameStr = SafeStr(phone.name);
+        NSString* ipStr = SafeStr(phone.ip);
+        if ([nameStr length] == 0) nameStr = @"Android 手机";
+        if ([ipStr length] == 0) continue;
+
+        NSString* title = [NSString stringWithFormat:@"📱 %@ (%@)", nameStr, ipStr];
         [phonePopUp addItemWithTitle:title];
         NSMenuItem* item = [phonePopUp lastItem];
         [item setRepresentedObject:@{
             @"type": @"wifi",
-            @"ip": [NSString stringWithUTF8String:phone.ip.c_str()],
-            @"port": @(phone.port)
+            @"ip": ipStr,
+            @"port": @(phone.port > 0 ? phone.port : 19999)
         }];
         count++;
     }
 
     // 2. 添加 USB 专线连入的手机
     for (const auto& dev : cachedUsbDevices) {
-        NSString* title = [NSString stringWithFormat:@"🔌 %@ (USB 专线)",
-                           [NSString stringWithUTF8String:dev.model.c_str()]];
+        NSString* modelStr = SafeStr(dev.model);
+        NSString* serialStr = SafeStr(dev.serial);
+        if ([modelStr length] == 0) modelStr = @"Android 设备";
+        if ([serialStr length] == 0) continue;
+
+        NSString* title = [NSString stringWithFormat:@"🔌 %@ (USB 专线)", modelStr];
         [phonePopUp addItemWithTitle:title];
         NSMenuItem* item = [phonePopUp lastItem];
         [item setRepresentedObject:@{
             @"type": @"usb",
-            @"serial": [NSString stringWithUTF8String:dev.serial.c_str()]
+            @"serial": serialStr
         }];
         count++;
     }
@@ -360,7 +379,7 @@
 
     __weak typeof(self) weakSelf = self;
     acast::desktop::DesktopController::GetInstance().PerformUpdateAsync([weakSelf](std::string status, int progress) {
-        NSString* statusStr = [NSString stringWithUTF8String:status.c_str()] ?: @"";
+        NSString* statusStr = SafeStr(status);
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
             if (!strongSelf) return;
