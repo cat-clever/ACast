@@ -41,9 +41,11 @@ public class MainActivity extends AppCompatActivity {
     private Button btnScanTv;
     private Button btnCheckUpdate;
     private TextView tvStatus;
+    private TextView tvDeviceHeader;
     private ListView lvDevices;
 
     private boolean isCapturing = false;
+    private String pendingTargetDevice = null;
     private ArrayAdapter<String> deviceAdapter;
     private ArrayList<String> deviceList = new ArrayList<>();
     private WifiManager.MulticastLock multicastLock;
@@ -66,10 +68,14 @@ public class MainActivity extends AppCompatActivity {
         btnScanTv = findViewById(R.id.btn_scan_tv);
         btnCheckUpdate = findViewById(R.id.btn_check_update);
         tvStatus = findViewById(R.id.tv_status);
+        tvDeviceHeader = findViewById(R.id.tv_device_header);
         lvDevices = findViewById(R.id.lv_devices);
 
         deviceAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, deviceList);
         lvDevices.setAdapter(deviceAdapter);
+
+        // 初始化界面状态
+        updateStatusUi();
 
         // 在线直接自动更新
         btnCheckUpdate.setOnClickListener(v -> performUpdateCheck(true));
@@ -109,17 +115,16 @@ public class MainActivity extends AppCompatActivity {
             }, 4000);
         });
 
+        // 点击设备项：严格要求先开启投屏再点击设备
         lvDevices.setOnItemClickListener((parent, view, position, id) -> {
             String selected = deviceList.get(position);
-            String controlUrl = selected;
-            int arrowIdx = selected.lastIndexOf(" -> ");
-            if (arrowIdx != -1) {
-                controlUrl = selected.substring(arrowIdx + 4).trim();
+            if (!isCapturing) {
+                pendingTargetDevice = selected;
+                Toast.makeText(this, "⚠️ 请先开启屏幕投屏！正在为您调起授权...", Toast.LENGTH_SHORT).show();
+                requestRequiredPermissionsAndStartCapture();
+                return;
             }
-            String myIp = getLocalIpAddress(this);
-            String streamUrl = "http://" + myIp + ":8088/live.ts";
-            DlnaSender.playMediaOnTv(controlUrl, streamUrl);
-            Toast.makeText(this, "已发起投屏！实时音画流: " + streamUrl, Toast.LENGTH_LONG).show();
+            castToDevice(selected);
         });
     }
 
@@ -211,7 +216,9 @@ public class MainActivity extends AppCompatActivity {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 startScreenCapture(resultCode, data);
             } else {
-                Toast.makeText(this, "用户未授予录屏权限", Toast.LENGTH_SHORT).show();
+                pendingTargetDevice = null;
+                Toast.makeText(this, "用户未授予录屏权限，投屏未开启", Toast.LENGTH_SHORT).show();
+                updateStatusUi();
             }
         }
     }
@@ -230,7 +237,15 @@ public class MainActivity extends AppCompatActivity {
 
             isCapturing = true;
             btnToggleCapture.setText(R.string.btn_stop_capture);
-            tvStatus.setText("正在投屏：USB/Wi-Fi 极低延迟反控与 DLNA 实时流已开启");
+            updateStatusUi();
+
+            // 若之前点击了某台大屏设备，待服务启动后自动完成投屏连接
+            if (pendingTargetDevice != null) {
+                String target = pendingTargetDevice;
+                pendingTargetDevice = null;
+                // 延迟 600ms 等待本地 HTTP-TS 实时流端口启动就绪
+                new Handler(Looper.getMainLooper()).postDelayed(() -> castToDevice(target), 600);
+            }
         } catch (Throwable t) {
             Log.e(TAG, "启动投屏服务失败: " + t.getMessage(), t);
             Toast.makeText(this, "启动服务异常: " + t.getMessage(), Toast.LENGTH_LONG).show();
@@ -244,8 +259,41 @@ public class MainActivity extends AppCompatActivity {
         } catch (Throwable ignored) {}
 
         isCapturing = false;
+        pendingTargetDevice = null;
         btnToggleCapture.setText(R.string.btn_start_capture);
-        tvStatus.setText(R.string.status_ready);
+        updateStatusUi();
+    }
+
+    private void castToDevice(String deviceItem) {
+        if (deviceItem == null) return;
+        String controlUrl = deviceItem;
+        String deviceName = deviceItem;
+        int arrowIdx = deviceItem.lastIndexOf(" -> ");
+        if (arrowIdx != -1) {
+            deviceName = deviceItem.substring(0, arrowIdx).trim();
+            controlUrl = deviceItem.substring(arrowIdx + 4).trim();
+        }
+        String myIp = getLocalIpAddress(this);
+        String streamUrl = "http://" + myIp + ":8088/live.ts";
+        DlnaSender.playMediaOnTv(controlUrl, streamUrl);
+        Toast.makeText(this, "已发起投屏至【" + deviceName + "】！", Toast.LENGTH_SHORT).show();
+        tvStatus.setText("✓ 正在向【" + deviceName + "】投屏中 (实时音画传输中)");
+    }
+
+    private void updateStatusUi() {
+        if (isCapturing) {
+            tvStatus.setText("✓ 投屏已开启：请点击下方大屏设备即可开始投屏 (支持 USB/Wi-Fi 反控)");
+            tvStatus.setTextColor(0xFF2E7D32); // 绿色
+            if (tvDeviceHeader != null) {
+                tvDeviceHeader.setText("3. 点击大屏设备开始投屏 (✓ 投屏服务已就绪):");
+            }
+        } else {
+            tvStatus.setText(R.string.status_ready);
+            tvStatus.setTextColor(0xFFE65100); // 醒目橙色
+            if (tvDeviceHeader != null) {
+                tvDeviceHeader.setText("3. 点击大屏设备开始投屏 (⚠️ 请先完成第1步开启投屏):");
+            }
+        }
     }
 
     private void performUpdateCheck(boolean userTriggered) {

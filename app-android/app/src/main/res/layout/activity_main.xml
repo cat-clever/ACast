@@ -46,9 +46,10 @@
         android:layout_marginBottom="24dp" />
 
     <TextView
+        android:id="@+id/tv_device_header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="可用大屏设备列表 (DLNA / Cast / AirPlay 协议):"
+        android:text="3. 点击大屏设备开始投屏 (⚠️ 请先完成第1步开启投屏):"
         android:textStyle="bold"
         android:layout_marginBottom="8dp" />
 
