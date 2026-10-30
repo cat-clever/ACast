@@ -33,11 +33,32 @@ DesktopController::~DesktopController() {
 
 void DesktopController::Init() {
     Log("ACast 控制端核心服务初始化就绪。");
+
+    // 启动局域网对等发现服务，监听并自动发现手机发射端
+    acast::discovery::PeerDiscovery::GetInstance().Start();
+    acast::discovery::PeerDiscovery::GetInstance().SetPhoneListCallback([this](const std::vector<acast::discovery::DiscoveredPhone>& phones) {
+        DiscoveredPhonesCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cb = phone_cb_;
+        }
+        if (cb) {
+            cb(phones);
+        }
+    });
+
+    // 手机端直接选择本电脑时，响应主动直连反控请求
+    acast::discovery::PeerDiscovery::GetInstance().SetConnectRequestCallback([this](const acast::discovery::ConnectRequest& req) {
+        Log("[局域网直连] 🎉 收到来自手机【" + req.phone_name + "】的主动连接请求，自动建立 FastMirror 反控通道...");
+        ConnectWifiPhone(req.phone_ip, req.phone_port);
+    });
+
     RefreshUsbDevices();
     CheckUpdateAsync();
 }
 
 void DesktopController::Cleanup() {
+    acast::discovery::PeerDiscovery::GetInstance().Stop();
     if (dlna_controller_) {
         dlna_controller_->StopDiscovery();
     }
@@ -187,6 +208,21 @@ std::vector<acast::adb::AdbDevice> DesktopController::GetUsbDevices() {
 void DesktopController::SetFastMirrorCallback(FastMirrorCallback cb) {
     std::lock_guard<std::mutex> lock(mutex_);
     fm_cb_ = cb;
+}
+
+void DesktopController::SetDiscoveredPhonesCallback(DiscoveredPhonesCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    phone_cb_ = cb;
+}
+
+void DesktopController::RefreshPhones() {
+    Log("[局域网] 正在全网广播搜寻手机发射端...");
+    acast::discovery::PeerDiscovery::GetInstance().SearchPhones();
+    RefreshUsbDevices();
+}
+
+std::vector<acast::discovery::DiscoveredPhone> DesktopController::GetDiscoveredPhones() {
+    return acast::discovery::PeerDiscovery::GetInstance().GetDiscoveredPhones();
 }
 
 void DesktopController::ConnectWifiPhone(const std::string& ip, uint16_t port) {

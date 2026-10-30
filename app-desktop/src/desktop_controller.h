@@ -9,6 +9,7 @@
 #include "adb_tunnel.h"
 #include "auto_updater.h"
 #include "fastmirror_client.h"
+#include "peer_discovery.h"
 
 namespace acast {
 namespace desktop {
@@ -17,6 +18,7 @@ using LogCallback = std::function<void(std::string)>;
 using TvDeviceCallback = std::function<void(std::vector<acast::dlna::DlnaDevice>)>;
 using UsbDeviceCallback = std::function<void(std::vector<acast::adb::AdbDevice>)>;
 using FastMirrorCallback = std::function<void(bool connected, std::string address)>;
+using DiscoveredPhonesCallback = std::function<void(std::vector<acast::discovery::DiscoveredPhone>)>;
 using UpdateCallback = std::function<void(acast::updater::UpdateInfo)>;
 using ProgressCallback = std::function<void(std::string, int)>;
 
@@ -36,8 +38,11 @@ public:
     void RefreshTvDevices();
     std::vector<acast::dlna::DlnaDevice> GetTvDevices();
 
-    // 局域网 Wi-Fi 手机私有协议直连反控
+    // 局域网 Wi-Fi 手机私有协议直连反控与自发现
     void SetFastMirrorCallback(FastMirrorCallback cb);
+    void SetDiscoveredPhonesCallback(DiscoveredPhonesCallback cb);
+    void RefreshPhones();
+    std::vector<acast::discovery::DiscoveredPhone> GetDiscoveredPhones();
     void ConnectWifiPhone(const std::string& ip, uint16_t port = 19999);
     void DisconnectWifiPhone();
     bool IsWifiPhoneConnected() const;
@@ -73,6 +78,7 @@ private:
     TvDeviceCallback tv_cb_;
     UsbDeviceCallback usb_cb_;
     FastMirrorCallback fm_cb_;
+    DiscoveredPhonesCallback phone_cb_;
     UpdateCallback update_cb_;
 
     std::unique_ptr<acast::dlna::DlnaController> dlna_controller_;

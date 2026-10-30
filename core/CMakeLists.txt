@@ -13,6 +13,7 @@ set(CORE_SOURCES
     src/http_ts_server.cpp
     src/adb_tunnel.cpp
     src/auto_updater.cpp
+    src/peer_discovery.cpp
 )
 
 set(CORE_HEADERS
@@ -22,6 +23,7 @@ set(CORE_HEADERS
     include/http_ts_server.h
     include/adb_tunnel.h
     include/auto_updater.h
+    include/peer_discovery.h
 )
 
 add_library(acast_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})

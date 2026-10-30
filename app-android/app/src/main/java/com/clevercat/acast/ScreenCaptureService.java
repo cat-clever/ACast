@@ -68,7 +68,7 @@ public class ScreenCaptureService extends Service {
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("ACast 投屏服务运行中")
-                .setContentText("正在传输屏幕与音频，USB/Wi-Fi 反控监听端口 19999")
+                .setContentText("正在传输屏幕与音频，支持电脑端一键反控与大屏投屏")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setOngoing(true)
                 .build();
