@@ -127,6 +127,20 @@ public class LocalHttpTsServer {
             }
         } catch (Throwable ignored) {}
         serverSocket = null;
+        for (ClientSession session : clientSessions) {
+            session.close();
+        }
+        clientSessions.clear();
+        synchronized (gopTsCache) {
+            gopTsCache.clear();
+        }
+        synchronized (hlsLock) {
+            hlsSegments.clear();
+            currentSegmentBuffer.reset();
+            currentSegmentStartPtsUs = -1;
+            currentSegmentLastPtsUs = -1;
+            hlsLock.notifyAll();
+        }
     }
 
     private void handleHttpClient(Socket client) {
@@ -254,7 +268,6 @@ public class LocalHttpTsServer {
         baos.write(pmt, 0, 188);
         baos.write(pcr, 0, 188);
         hlsSegments.add(new HlsSegment(segmentSequenceCounter++, 1.0, baos.toByteArray()));
-    }
     }
 
     /**
@@ -784,24 +797,4 @@ public class LocalHttpTsServer {
         return crc;
     }
 
-    public void stopServer() {
-        isRunning = false;
-        try {
-            if (serverSocket != null) serverSocket.close();
-        } catch (Throwable ignored) {}
-        for (ClientSession session : clientSessions) {
-            session.close();
-        }
-        clientSessions.clear();
-        synchronized (gopTsCache) {
-            gopTsCache.clear();
-        }
-        synchronized (hlsLock) {
-            hlsSegments.clear();
-            currentSegmentBuffer.reset();
-            currentSegmentStartPtsUs = -1;
-            currentSegmentLastPtsUs = -1;
-            hlsLock.notifyAll();
-        }
-    }
 }

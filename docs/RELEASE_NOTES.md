@@ -1,6 +1,20 @@
 # ACast 发版说明
 
-## v0.3.1 更新日志 (最新)
+## v0.3.2 更新日志 (最新)
+
+1. **彻底解决 ADisplay / 智能电视大屏投屏中断 (Playback Stopped / Operation Stopped)**：
+   * **绕开 ADisplay 点播换封装引擎**：通过深入分析 ADisplay 服务端源码，确定其内部 `MediaRelay` 会误将 `.m3u8` 当做点播文件并强行添加 `#EXT-X-ENDLIST` 导致播完前几秒后直接中断。将 DLNA 直连推送端点更新为 `http://<ip>:8088/live`，彻底绕过破坏性拦截，交由原生播放器（AVPlayer / ExoPlayer）以原生实时直播协议拉流，永不断流；
+   * **M3U8 多路由支持**：`LocalHttpTsServer` 统一支持 `/live` 与 `/live.m3u8` 路由，并声明合规 MIME `application/vnd.apple.mpegurl`；
+   * **首帧保底分片机制**：启动时注入初始待命切片，确保客户端在未收到第一帧前不会因清单为空而报错退出；
+   * **编译语法修复**：剔除 `LocalHttpTsServer.java` 中多余花括号，恢复 Android APK 自动打包构建。
+2. **桌面控制端实时画面与全功能反控**：
+   * **双分栏专业控制台**：左侧 420x690 专用手机视窗，右侧控制与日志面板；
+   * **macOS VideoToolbox 硬件解码**：低延迟超清渲染手机投屏画面；
+   * **鼠标拖拽/滑动手势与键盘输入**：支持鼠标单点与滑动拖拽（精准归一化坐标）、右键返回、键盘打字直接输入到手机。
+
+---
+
+## v0.3.1 更新日志
 
 1. **彻底解决 ADisplay / 电视大屏投屏中断 (Playback Stopped)**：
    * **深入源码排查**：分析 ADisplay 源码发现其 `MediaRelay` 换封装模块会将含 `.m3u8` 的流误判为点播（VOD），强加 `#EXT-X-ENDLIST` 导致播完 4 秒直接中断；
