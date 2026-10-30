@@ -104,19 +104,47 @@ public class LocalHttpTsServer {
                 return;
             }
 
+            String requestLine = "";
+            boolean isHead = false;
+            try {
+                String reqStr = new String(buf, 0, read, "UTF-8");
+                int firstLineEnd = reqStr.indexOf("\r\n");
+                if (firstLineEnd > 0) {
+                    requestLine = reqStr.substring(0, firstLineEnd);
+                } else {
+                    requestLine = reqStr;
+                }
+                if (requestLine.startsWith("HEAD")) {
+                    isHead = true;
+                }
+            } catch (Throwable ignored) {}
+            Log.i(TAG, "电视客户端请求拉流: " + requestLine + " (来自 " + client.getRemoteSocketAddress() + ")");
+
             OutputStream out = client.getOutputStream();
-            // 响应标准实时流 HTTP Header，明确告知不可 seek、无需缓存的 raw TS 流
+            // 响应标准 DLNA 实时直播流 HTTP Header (包含 streaming 扩展与特性声明)
             String responseHeader =
                     "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: video/mp2t\r\n" +
-                    "Connection: close\r\n" +
+                    "Connection: keep-alive\r\n" +
                     "Accept-Ranges: none\r\n" +
                     "Cache-Control: no-cache, no-store, must-revalidate\r\n" +
                     "Pragma: no-cache\r\n" +
                     "Expires: 0\r\n" +
-                    "Access-Control-Allow-Origin: *\r\n\r\n";
+                    "Access-Control-Allow-Origin: *\r\n" +
+                    "transferMode.dlna.org: Streaming\r\n" +
+                    "contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n" +
+                    "ext:\r\n\r\n";
             out.write(responseHeader.getBytes("UTF-8"));
             out.flush();
+
+            // 如果是探测性 HEAD 请求，发送完合法 Headers 后直接退出，绝不发送二进制 Body
+            if (isHead) {
+                Log.i(TAG, "HEAD 请求握手成功，等待电视后续拉流连接。");
+                return;
+            }
+
+            // 电视正式连入拉流，立即请求硬件编码器即刻刷新全量关键帧 (IDR 帧)
+            ScreenCaptureService.requestKeyFrame();
 
             session = new ClientSession(client, out);
 
@@ -144,13 +172,22 @@ public class LocalHttpTsServer {
 
             clientSessions.add(session);
 
-            // 3. 持续消费待发送队列
+            // 3. 持续消费待发送队列，并提供 40ms 高频 PCR 心跳守护（防止屏幕静止时电视 Demux PLL 失锁报 Operation Stopped）
+            long lastPcrTimeMs = System.currentTimeMillis();
             while (isRunning && session.active && !client.isClosed()) {
                 byte[] data = session.sendQueue.poll();
                 if (data != null) {
                     out.write(data);
                     out.flush();
+                    lastPcrTimeMs = System.currentTimeMillis();
                 } else {
+                    long now = System.currentTimeMillis();
+                    if (now - lastPcrTimeMs >= 40) { // 超过 40ms 屏幕静止无帧，发送纯 PCR 时钟心跳包
+                        byte[] pcrPacket = generatePcrPacket();
+                        out.write(pcrPacket);
+                        out.flush();
+                        lastPcrTimeMs = now;
+                    }
                     try {
                         Thread.sleep(10);
                     } catch (InterruptedException e) {
@@ -168,6 +205,29 @@ public class LocalHttpTsServer {
             }
             try { client.close(); } catch (Throwable ignored) {}
         }
+    }
+
+    /**
+     * 生成 188 字节的纯 PCR 时钟心跳包 (在画面静止无视频输出时维持电视时钟锁相环，杜绝超时断流)
+     */
+    private byte[] generatePcrPacket() {
+        byte[] ts = new byte[188];
+        Arrays.fill(ts, (byte) 0xFF);
+        ts[0] = TS_SYNC_BYTE;
+        ts[1] = (byte) ((TS_PID_VIDEO >> 8) & 0x1F);
+        ts[2] = (byte) (TS_PID_VIDEO & 0xFF);
+        ts[3] = 0x20; // 仅含 Adaptation Field，无 payload，continuity counter 保持不变
+        ts[4] = (byte) 183; // adaptation length: 188 - 5 = 183
+        ts[5] = 0x10; // PCR_flag = 1
+
+        long pts90k = (System.currentTimeMillis() * 90); // 90kHz 时钟基准
+        ts[6] = (byte) ((pts90k >> 25) & 0xFF);
+        ts[7] = (byte) ((pts90k >> 17) & 0xFF);
+        ts[8] = (byte) ((pts90k >> 9) & 0xFF);
+        ts[9] = (byte) ((pts90k >> 1) & 0xFF);
+        ts[10] = (byte) (((pts90k & 1) << 7) | 0x7E);
+        ts[11] = 0x00;
+        return ts;
     }
 
     public synchronized void setSpsPps(byte[] spsPps) {

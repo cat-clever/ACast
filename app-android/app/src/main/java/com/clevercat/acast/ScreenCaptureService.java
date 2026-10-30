@@ -43,9 +43,27 @@ public class ScreenCaptureService extends Service {
     private boolean isEncoding = false;
     private Thread encoderThread;
 
+    private static ScreenCaptureService sInstance;
+
+    public static void requestKeyFrame() {
+        if (sInstance != null && sInstance.videoCodec != null && sInstance.isEncoding) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                    android.os.Bundle params = new android.os.Bundle();
+                    params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+                    sInstance.videoCodec.setParameters(params);
+                    Log.i(TAG, "已向硬件编码器请求即时刷新关键帧 (I-Frame/IDR)");
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "requestKeyFrame 异常: " + t.getMessage());
+            }
+        }
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
+        sInstance = this;
         createNotificationChannel();
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
@@ -173,6 +191,10 @@ public class ScreenCaptureService extends Service {
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                // 画面静止时每隔 100ms 重复上一帧，保证实时流恒定输出，杜绝电视 2 秒无帧断流报 Operation Stopped
+                format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100000L);
+            }
 
             videoCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
             videoCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -258,6 +280,7 @@ public class ScreenCaptureService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        sInstance = null;
         isEncoding = false;
         if (encoderThread != null) {
             try {

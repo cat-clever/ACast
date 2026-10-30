@@ -1,6 +1,16 @@
 # ACast 发版说明
 
-## v0.2.2 更新日志 (最新)
+## v0.2.3 更新日志 (最新)
+
+1. **彻底攻克 Android DLNA 投屏大屏拉流失败 (Operation Stopped) 的核心根因**：
+   * **静止画面恒定推流守护**：为硬件编码器配置 `KEY_REPEAT_PREVIOUS_FRAME_AFTER = 100000L`，彻底解决屏幕静止时编码器停产导致电视 2 秒读不到新数据超时抛出 `Operation Stopped`；
+   * **高频 PCR 时钟心跳守护**：引入 40ms 高频 PCR 心跳 TS 包，符合 ISO/IEC 13818-1 规范，维持电视硬件解复用芯片时钟锁相环同步，杜绝时钟失锁断流；
+   * **连接即刷 I 帧**：电视连入瞬间主动向 `MediaCodec` 请求 `PARAMETER_KEY_REQUEST_SYNC_FRAME` 刷新关键帧，连同 PAT/PMT 首屏秒开；
+   * **DLNA 规范 HTTP 标头与时序**：补全 `transferMode.dlna.org: Streaming` 与 `DLNA.ORG_OP=01`，规范 `HEAD` 探测请求，并在投屏发送 `SetAVTransportURI` 后预留 500ms 缓冲等待大屏建联后再发 `Play`。
+
+---
+
+## v0.2.2 更新日志
 
 1. **控制端全面支持 FastMirror 私有协议局域网 Wi-Fi IP 与端口直连**：
    * **突破连接拓扑**：桌面控制端（Windows & macOS 原生视窗）除原有的 USB 专线连接外，现已全面开放局域网 IP 与端口直连能力；

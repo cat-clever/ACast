@@ -296,14 +296,29 @@ public class DlnaSender {
                     return;
                 }
 
+                // 先尝试执行 Stop 复位可能存在的遗留状态
+                try {
+                    String stopBody =
+                            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+                            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">\n" +
+                            "  <s:Body>\n" +
+                            "    <u:Stop xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\n" +
+                            "      <InstanceID>0</InstanceID>\n" +
+                            "    </u:Stop>\n" +
+                            "  </s:Body>\n" +
+                            "</s:Envelope>";
+                    sendSoap(controlUrl, "Stop", stopBody);
+                    Thread.sleep(100);
+                } catch (Throwable ignored) {}
+
                 // 标准 UPnP / DLNA AVTransport SOAP 投送
-                // 构造标准 DIDL-Lite 元数据，显式指定 video/mp2t 协议信息，帮助大屏瞬间锁定解码管线
+                // 构造标准 DIDL-Lite 元数据，携带完整 DLNA.ORG_OP=01 直播流特性声明，帮助大屏瞬间锁定解码管线
                 String didlXml =
                         "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">" +
                         "<item id=\"0\" parentID=\"-1\" restricted=\"1\">" +
                         "<dc:title>ACast 实时投屏</dc:title>" +
                         "<upnp:class>object.item.videoItem</upnp:class>" +
-                        "<res protocolInfo=\"http-get:*:video/mp2t:*\">" + mediaUrl + "</res>" +
+                        "<res protocolInfo=\"http-get:*:video/mp2t:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\">" + mediaUrl + "</res>" +
                         "</item>" +
                         "</DIDL-Lite>";
                 String escapedDidl = didlXml.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
@@ -322,7 +337,8 @@ public class DlnaSender {
 
                 sendSoap(controlUrl, "SetAVTransportURI", soapBody);
 
-                Thread.sleep(200);
+                // 预留 500ms 缓冲，确保大屏底层解复用器和网络 Socket 建立完毕
+                Thread.sleep(500);
 
                 String playBody =
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
