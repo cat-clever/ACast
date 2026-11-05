@@ -73,8 +73,14 @@ public class ScreenCaptureService extends Service {
         }
     }
 
+    public static void requestKeyFrameDelayed() {
+        requestKeyFrame();
+        new Handler(Looper.getMainLooper()).postDelayed(ScreenCaptureService::requestKeyFrame, 100);
+        new Handler(Looper.getMainLooper()).postDelayed(ScreenCaptureService::requestKeyFrame, 300);
+    }
+
     /**
-     * 当屏幕点亮或解锁时，重新绑定 VirtualDisplay 并请求全量关键帧，根治锁屏黑屏与后台自杀
+     * 当屏幕点亮或解锁时，重新唤醒 Surface 并高频下发关键帧，根治锁屏黑屏
      */
     public static void onScreenUnlocked() {
         if (sInstance != null) {
@@ -83,53 +89,33 @@ public class ScreenCaptureService extends Service {
     }
 
     private synchronized void handleScreenUnlockedInternal() {
-        Log.i(TAG, "✓ 收到亮屏/解锁唤醒事件，检查前台投屏管线与 MediaProjection 状态...");
+        Log.i(TAG, "✓ 收到亮屏/解锁唤醒事件，检查前台投屏管线与 VirtualDisplay 状态...");
 
-        // 1. 若锁屏导致 MediaProjection 会话被系统挂起，使用缓存的授权凭证恢复 MediaProjection 实例
-        if ((mediaProjection == null || isMediaProjectionStopped) && sResultCode != 0 && sResultData != null) {
-            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-            if (manager != null) {
-                try {
-                    mediaProjection = manager.getMediaProjection(sResultCode, sResultData);
-                    if (mediaProjection != null) {
-                        isMediaProjectionStopped = false;
-                        Log.i(TAG, "✓ 成功重新恢复 MediaProjection 投屏实例！");
-                        mediaProjection.registerCallback(new MediaProjection.Callback() {
-                            @Override
-                            public void onStop() {
-                                super.onStop();
-                                Log.w(TAG, "MediaProjection 停止回调触发 (系统息屏锁屏挂起，保持前台服务常驻保活，等待亮屏解锁恢复...)");
-                                isMediaProjectionStopped = true;
-                                if (virtualDisplay != null) {
-                                    try {
-                                        virtualDisplay.setSurface(null);
-                                        virtualDisplay.release();
-                                    } catch (Throwable ignored) {}
-                                    virtualDisplay = null;
-                                }
-                            }
-                        }, new Handler(Looper.getMainLooper()));
-                    }
-                } catch (Throwable t) {
-                    Log.w(TAG, "重新恢复 MediaProjection 异常: " + t.getMessage());
-                }
-            }
+        // 重点：Android 14+ 严格禁止单个 MediaProjection 重复创建 VirtualDisplay，
+        // 因此绝对不能主动 release 现存 VirtualDisplay 实例，只需确保绑定唤醒
+        if (virtualDisplay != null && inputSurface != null) {
+            try {
+                virtualDisplay.setSurface(inputSurface);
+            } catch (Throwable ignored) {}
+            Log.i(TAG, "✓ 现有 VirtualDisplay 正常就绪，重新激活 Surface 映射");
+        } else {
+            createOrResetVirtualDisplay();
         }
 
-        // 2. 重新绑定 VirtualDisplay 并强制下发关键帧
-        createOrResetVirtualDisplay();
-        requestKeyFrame();
+        // 连续下发 3 次关键帧请求，确保亮屏解锁后画面秒级恢复显示
+        requestKeyFrameDelayed();
     }
 
     public synchronized void createOrResetVirtualDisplay() {
         if (mediaProjection == null || inputSurface == null) return;
         try {
             if (virtualDisplay != null) {
+                // 已经存在 VirtualDisplay，切勿 release 重建，防止触发系统安全单次限制
                 try {
-                    virtualDisplay.setSurface(null);
-                    virtualDisplay.release();
+                    virtualDisplay.setSurface(inputSurface);
                 } catch (Throwable ignored) {}
-                virtualDisplay = null;
+                requestKeyFrameDelayed();
+                return;
             }
 
             VirtualDisplay.Callback callback = new VirtualDisplay.Callback() {
@@ -143,7 +129,7 @@ public class ScreenCaptureService extends Service {
                 public void onResumed() {
                     super.onResumed();
                     Log.i(TAG, "VirtualDisplay 已恢复 (亮屏解锁)，立即触发关键帧刷新");
-                    requestKeyFrame();
+                    requestKeyFrameDelayed();
                 }
 
                 @Override
@@ -161,8 +147,7 @@ public class ScreenCaptureService extends Service {
             );
             Log.i(TAG, "✓ VirtualDisplay 已成功建立镜像绑定 (" + cachedWidth + "x" + cachedHeight + ")");
 
-            // 重新绑定后立即强制请求关键帧刷新
-            requestKeyFrame();
+            requestKeyFrameDelayed();
         } catch (Throwable t) {
             Log.e(TAG, "createOrResetVirtualDisplay 失败: " + t.getMessage(), t);
         }

@@ -1025,15 +1025,51 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 
-- (void)mouseDown:(NSEvent *)event {
+- (void)mouseDown:(NSEvent *)initialEvent {
     [[self window] makeFirstResponder:self];
     isMouseDown = true;
     lastDragSendTime = std::chrono::steady_clock::now();
-    [self sendNormalizedTouchWithEvent:event action:0]; // 0: DOWN (100% 立即发送)
+    [self sendNormalizedTouchWithEvent:initialEvent action:0]; // 0: DOWN (100% 立即发送)
+
+    // 采用 AppKit 标准 Mouse Tracking Loop 机制：
+    // 无论是大幅度快速甩出视窗、甩到 Dock 栏或桌面任何角落，
+    // 整个拖拽轨迹与最终的松手抬起 (mouseUp) 都能 100% 精确捕获，绝不发生滑出视窗后卡住悬按！
+    NSWindow* win = [self window];
+    if (!win) return;
+
+    BOOL keepTracking = YES;
+    while (keepTracking) {
+        @autoreleasepool {
+            NSEvent* event = [win nextEventMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)];
+            if (!event) break;
+
+            if ([event type] == NSEventTypeLeftMouseDragged) {
+                // 安全防卫：如果底层检测到鼠标按键已释放
+                if (([NSEvent pressedMouseButtons] & 1) == 0) {
+                    [self sendNormalizedTouchWithEvent:event action:2]; // UP
+                    isMouseDown = false;
+                    keepTracking = NO;
+                    break;
+                }
+
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDragSendTime).count();
+                if (elapsed >= 15) { // 限制最低发送间隔约 60Hz，保证流畅且防背压
+                    lastDragSendTime = now;
+                    [self sendNormalizedTouchWithEvent:event action:1]; // 1: MOVE
+                }
+            } else if ([event type] == NSEventTypeLeftMouseUp) {
+                [self sendNormalizedTouchWithEvent:event action:2]; // 2: UP (100% 准确抬手)
+                isMouseDown = false;
+                keepTracking = NO;
+                break;
+            }
+        }
+    }
 }
 
 - (void)mouseDragged:(NSEvent *)event {
-    // 关键防御：如果检测到左键实际已经松开（例如用户快速甩出视窗并在外部释放了鼠标按键）
+    // 备用事件路径
     if (([NSEvent pressedMouseButtons] & 1) == 0) {
         if (isMouseDown) {
             [self mouseUp:event];
@@ -1041,19 +1077,18 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         return;
     }
 
-    // 鼠标拖拽高频限流防背压：限制最低发送间隔为 16ms (约 60Hz)，杜绝高刷鼠标将 UI 主线程和 Socket 缓冲区阻塞拥死
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDragSendTime).count();
-    if (elapsed < 16) {
+    if (elapsed < 15) {
         return;
     }
     lastDragSendTime = now;
-    [self sendNormalizedTouchWithEvent:event action:1]; // 1: MOVE
+    [self sendNormalizedTouchWithEvent:event action:1];
 }
 
 - (void)mouseUp:(NSEvent *)event {
     isMouseDown = false;
-    [self sendNormalizedTouchWithEvent:event action:2]; // 2: UP (100% 立即发送)
+    [self sendNormalizedTouchWithEvent:event action:2];
 }
 
 - (void)viewWillMoveToWindow:(NSWindow *)newWindow {
@@ -1804,11 +1839,12 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         NSView* container = [standalonePhoneWindow contentView];
         [screenView removeFromSuperview];
         NSRect cBounds = [container bounds];
-        [screenView setFrame:NSMakeRect(0, 84, cBounds.size.width, std::max((CGFloat)100.0, cBounds.size.height - 84))];
+        [screenView setFrame:NSMakeRect(0, 44, cBounds.size.width, std::max((CGFloat)100.0, cBounds.size.height - 44))];
         [screenView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
         [screenView setHidden:NO];
         [container addSubview:screenView];
         [screenView setNeedsDisplay:YES];
+        [standalonePhoneWindow makeFirstResponder:screenView];
     }
 }
 
@@ -1825,6 +1861,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         [screenView setHidden:NO];
         [contentView addSubview:screenView];
         [screenView setNeedsDisplay:YES];
+        [window makeFirstResponder:screenView];
     }
     [screenNavBar setHidden:NO];
     [detachedPlaceholderView setHidden:YES];
@@ -1853,29 +1890,13 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
         NSView* container = [standalonePhoneWindow contentView];
 
-        // 底部 84 像素综合控制栏 (快捷中文输入 + 导航三键)
-        NSView* navBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 84)];
+        // 底部 44 像素极简导航控制栏 (保留返回、Home、任务三键，居中紧凑布局，彻底移除多余输入框和发送按钮)
+        NSView* navBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 44)];
         [navBar setAutoresizingMask:NSViewWidthSizable | NSViewMaxYMargin];
         [navBar setWantsLayer:YES];
         navBar.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.10 green:0.11 blue:0.13 alpha:1.0].CGColor;
 
-        // 快捷文本输入框 (支持中文输入法长句输入、粘贴内容，按 Enter 键即刻上屏发送)
-        standaloneQuickInput = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 48, 315, 26)];
-        [standaloneQuickInput setPlaceholderString:@"在此输入中文/英文或粘贴文本，按回车发送..."];
-        [standaloneQuickInput setTarget:self];
-        [standaloneQuickInput setAction:@selector(onQuickInputSend:)];
-        [standaloneQuickInput setAutoresizingMask:NSViewWidthSizable];
-        [navBar addSubview:standaloneQuickInput];
-
-        NSButton* btnSend = [[NSButton alloc] initWithFrame:NSMakeRect(335, 46, 70, 28)];
-        [btnSend setTitle:@"发送"];
-        [btnSend setBezelStyle:NSBezelStyleRounded];
-        [btnSend setTarget:self];
-        [btnSend setAction:@selector(onQuickInputBtnClicked:)];
-        [btnSend setAutoresizingMask:NSViewMinXMargin];
-        [navBar addSubview:btnSend];
-
-        NSButton* btnBack = [[NSButton alloc] initWithFrame:NSMakeRect(15, 8, 115, 32)];
+        NSButton* btnBack = [[NSButton alloc] initWithFrame:NSMakeRect(15, 6, 115, 32)];
         [btnBack setTitle:@"◀ 返回 (Back)"];
         [btnBack setBezelStyle:NSBezelStyleRounded];
         [btnBack setTarget:self];
@@ -1883,7 +1904,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         [btnBack setAutoresizingMask:NSViewMaxXMargin];
         [navBar addSubview:btnBack];
 
-        NSButton* btnHome = [[NSButton alloc] initWithFrame:NSMakeRect(152, 8, 115, 32)];
+        NSButton* btnHome = [[NSButton alloc] initWithFrame:NSMakeRect(152, 6, 115, 32)];
         [btnHome setTitle:@"○ 桌面 (Home)"];
         [btnHome setBezelStyle:NSBezelStyleRounded];
         [btnHome setTarget:self];
@@ -1891,7 +1912,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         [btnHome setAutoresizingMask:NSViewMinXMargin | NSViewMaxXMargin];
         [navBar addSubview:btnHome];
 
-        NSButton* btnRecents = [[NSButton alloc] initWithFrame:NSMakeRect(285, 8, 115, 32)];
+        NSButton* btnRecents = [[NSButton alloc] initWithFrame:NSMakeRect(285, 6, 115, 32)];
         [btnRecents setTitle:@"▢ 任务 (Tasks)"];
         [btnRecents setBezelStyle:NSBezelStyleRounded];
         [btnRecents setTarget:self];
@@ -1903,6 +1924,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     }
 
     [standalonePhoneWindow makeKeyAndOrderFront:nil];
+    if (screenView) {
+        [standalonePhoneWindow makeFirstResponder:screenView];
+    }
 }
 
 - (void)onInstallCameraExtensionClicked:(id)sender {

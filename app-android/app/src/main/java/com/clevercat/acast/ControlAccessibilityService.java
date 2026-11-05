@@ -267,10 +267,36 @@ public class ControlAccessibilityService extends AccessibilityService {
                 lastStrokeEndY = targetY;
 
                 boolean willContinue = isPointerDown;
+                float finalTargetX = targetX;
+                float finalTargetY = targetY;
                 long dur = Math.max(30L, Math.min(75L, (long)(dist * 0.75)));
 
-                GestureDescription.Builder builder = new GestureDescription.Builder();
-                GestureDescription.StrokeDescription stroke;
+                if (!willContinue) {
+                    // 抬手收尾：检测是否属于快速甩动 (Fling/Swipe 翻页)
+                    float totalDx = currentTargetX - downX;
+                    float totalDy = currentTargetY - downY;
+                    long totalDur = System.currentTimeMillis() - downTimeMs;
+                    if ((Math.abs(totalDx) > 35.0f || Math.abs(totalDy) > 35.0f) && totalDur < 650L) {
+                        DisplayMetrics dm = getRealScreenMetrics();
+                        float screenW = dm.widthPixels > 0 ? dm.widthPixels : 1080;
+                        float screenH = dm.heightPixels > 0 ? dm.heightPixels : 1920;
+                        if (Math.abs(totalDx) >= Math.abs(totalDy)) {
+                            finalTargetX += (totalDx > 0 ? 120.0f : -120.0f);
+                            finalTargetX = Math.max(0.0f, Math.min(screenW, finalTargetX));
+                        } else {
+                            finalTargetY += (totalDy > 0 ? 120.0f : -120.0f);
+                            finalTargetY = Math.max(0.0f, Math.min(screenH, finalTargetY));
+                        }
+                        dur = 40L; // 以极短时间完成位移，赋予 Android 桌面系统强劲的翻页初速度
+                    }
+                }
+
+                if (dist >= 1.0f || !willContinue) {
+                    path.lineTo(finalTargetX, finalTargetY);
+                }
+
+                lastStrokeEndX = finalTargetX;
+                lastStrokeEndY = finalTargetY;
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && currentStroke != null) {
                     stroke = currentStroke.continueStroke(path, 0, dur, willContinue);
@@ -442,8 +468,12 @@ public class ControlAccessibilityService extends AccessibilityService {
         }
     }
 
+    // 智能输入缓冲区：跟踪最后一次写入的文本与时间戳，彻底消除跨进程无障碍异步更新延迟导致的单字覆盖
+    private static String sLastInjectedText = "";
+    private static long sLastInjectedTime = 0;
+
     /**
-     * 电脑键盘文本输入上屏：优先剪贴板在光标处插入粘贴，备用模式下获取已有文本拼接追加，杜绝整框单字覆盖
+     * 电脑键盘文本输入上屏：优先剪贴板在光标处插入粘贴，备用模式下结合时间感知文本缓冲区连续流式追加，杜绝整框单字覆盖
      */
     public static void injectText(String text) {
         if (instance == null || text == null || text.isEmpty()) return;
@@ -452,27 +482,60 @@ public class ControlAccessibilityService extends AccessibilityService {
             try {
                 wakeUpScreenIfNeeded();
                 AccessibilityNodeInfo root = instance.getRootInActiveWindow();
-                if (root != null) {
-                    AccessibilityNodeInfo focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-                    if (focused != null) {
-                        // 1. 优先尝试系统剪贴板光标处粘贴（最符合自然打字体验，支持光标位置插入）
-                        ClipboardManager cm = (ClipboardManager) instance.getSystemService(Context.CLIPBOARD_SERVICE);
-                        if (cm != null) {
-                            ClipData clip = ClipData.newPlainText("ACast_Input", text);
-                            cm.setPrimaryClip(clip);
-                            if (focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
-                                return;
-                            }
+                if (root == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    for (AccessibilityWindowInfo w : instance.getWindows()) {
+                        if (w.isFocused() && w.getRoot() != null) {
+                            root = w.getRoot();
+                            break;
                         }
+                    }
+                }
 
-                        // 2. 备用追加模式：读取已有文本并在末尾拼接，绝对不能直接覆盖整框文本！
-                        CharSequence existing = focused.getText();
-                        String newText = (existing != null ? existing.toString() : "") + text;
-                        Bundle arguments = new Bundle();
-                        arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText);
-                        if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                AccessibilityNodeInfo targetNode = null;
+                if (root != null) {
+                    targetNode = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                    if (targetNode == null) {
+                        targetNode = findFocusedEditableNode(root);
+                    }
+                }
+
+                if (targetNode != null) {
+                    try {
+                        targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+                    } catch (Throwable ignored) {}
+
+                    // 1. 优先尝试系统剪贴板原生光标处粘贴（最符合自然打字体验，支持光标处插入且绝不覆盖已有文本）
+                    ClipboardManager cm = (ClipboardManager) instance.getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        ClipData clip = ClipData.newPlainText("ACast_Input", text);
+                        cm.setPrimaryClip(clip);
+                        if (targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                            sLastInjectedText = "";
                             return;
                         }
+                    }
+
+                    // 2. 备用模式：ACTION_SET_TEXT，结合本地文本缓冲区，杜绝跨进程延迟导致的单字覆盖
+                    CharSequence currentSeq = targetNode.getText();
+                    String currentText = (currentSeq != null) ? currentSeq.toString() : "";
+
+                    long now = System.currentTimeMillis();
+                    String baseText;
+                    // 若距离上次注入小于 1200ms，说明处于快速连续敲键打字中；若此时系统节点返回空或短于上次文本，采用缓冲区基底
+                    if (now - sLastInjectedTime < 1200L && currentText.length() < sLastInjectedText.length()) {
+                        baseText = sLastInjectedText;
+                    } else {
+                        baseText = currentText;
+                    }
+
+                    String newCombined = baseText + text;
+                    sLastInjectedText = newCombined;
+                    sLastInjectedTime = now;
+
+                    Bundle arguments = new Bundle();
+                    arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newCombined);
+                    if (targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                        return;
                     }
                 }
 
@@ -486,6 +549,21 @@ public class ControlAccessibilityService extends AccessibilityService {
                 Log.w(TAG, "文本注入异常: " + t.getMessage());
             }
         });
+    }
+
+    private static AccessibilityNodeInfo findFocusedEditableNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        if (node.isFocused() && node.isEditable()) {
+            return node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo res = findFocusedEditableNode(child);
+                if (res != null) return res;
+            }
+        }
+        return null;
     }
 
     /**
@@ -522,19 +600,31 @@ public class ControlAccessibilityService extends AccessibilityService {
                     handled = instance.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
                     break;
                 case 7: // KEY_DEL (退格删除键)
-                    AccessibilityNodeInfo root = instance.getRootInActiveWindow();
-                    if (root != null) {
-                        AccessibilityNodeInfo focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-                        if (focused != null) {
-                            CharSequence cur = focused.getText();
-                            if (cur != null && cur.length() > 0) {
-                                String delText = cur.subSequence(0, cur.length() - 1).toString();
-                                Bundle args = new Bundle();
-                                args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, delText);
-                                handled = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
-                            }
+                    AccessibilityNodeInfo rootDel = instance.getRootInActiveWindow();
+                    AccessibilityNodeInfo focusedDel = null;
+                    if (rootDel != null) {
+                        focusedDel = rootDel.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                        if (focusedDel == null) focusedDel = findFocusedEditableNode(rootDel);
+                    }
+                    if (focusedDel != null) {
+                        CharSequence cur = focusedDel.getText();
+                        String curStr = (cur != null) ? cur.toString() : "";
+                        if (curStr.isEmpty() && !sLastInjectedText.isEmpty()) {
+                            curStr = sLastInjectedText;
+                        }
+                        if (!curStr.isEmpty()) {
+                            String delText = curStr.substring(0, curStr.length() - 1);
+                            sLastInjectedText = delText;
+                            sLastInjectedTime = System.currentTimeMillis();
+                            Bundle args = new Bundle();
+                            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, delText);
+                            handled = focusedDel.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
                         }
                     }
+                    break;
+                case 8: // KEY_ENTER (回车换行)
+                    injectText("\n");
+                    handled = true;
                     break;
                 default:
                     Log.w(TAG, "未知的全局按键码: " + keyCode);
