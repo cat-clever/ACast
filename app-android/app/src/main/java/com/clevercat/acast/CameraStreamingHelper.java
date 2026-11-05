@@ -241,6 +241,7 @@ public class CameraStreamingHelper {
                             if (isConfig) {
                                 cachedSpsPps = outData;
                                 FastMirrorSender.getInstance().setCameraSpsPps(cachedSpsPps);
+                                LocalHttpTsServer.getInstance().setSpsPps(cachedSpsPps);
                             } else {
                                 byte[] payloadToSend = outData;
                                 if (isKeyFrame && cachedSpsPps != null && !containsSps(outData)) {
@@ -252,6 +253,8 @@ public class CameraStreamingHelper {
 
                                 // 通过 FastMirror MSG_CAMERA_FRAME 独立通道发送至 Mac 控制端
                                 FastMirrorSender.getInstance().sendCamera(payloadToSend, isKeyFrame, bufferInfo.presentationTimeUs);
+                                // 同步分发至局域网 TS 实时直播流，支持 OBS、VLC 等大屏直接拉取摄像头高清流
+                                LocalHttpTsServer.getInstance().pushVideo(payloadToSend, isKeyFrame, bufferInfo.presentationTimeUs);
                             }
                         }
                         videoCodec.releaseOutputBuffer(outputBufferIndex, false);
@@ -269,6 +272,7 @@ public class CameraStreamingHelper {
                             System.arraycopy(ppsData, 0, spsPps, spsData.length, ppsData.length);
                             cachedSpsPps = spsPps;
                             FastMirrorSender.getInstance().setCameraSpsPps(cachedSpsPps);
+                            LocalHttpTsServer.getInstance().setSpsPps(cachedSpsPps);
                         }
                     }
                 } catch (Throwable t) {

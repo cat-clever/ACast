@@ -1931,18 +1931,16 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
 - (void)onInstallCameraExtensionClicked:(id)sender {
     NSAlert* alert = [[NSAlert alloc] init];
-    [alert setMessageText:@"macOS 相机扩展说明与使用指引"];
+    [alert setMessageText:@"macOS 虚拟摄像头使用指南"];
     [alert setInformativeText:
-        @"【💡 推荐：免配置直通方案（已自动就绪）】\n"
-        @"ACast 内置 CoreMediaIO 虚拟相机直通技术，能够自动接管系统已激活的虚拟相机扩展（如 OBS Virtual Camera 等）。\n"
-        @"您只需在 Android 端点击【📷 启用 Android 摄像头】，然后在 Zoom、FaceTime、Photo Booth 或腾讯会议的摄像头列表中，选择【OBS Virtual Camera】，就能直接使用 Android 手机高清摄像头！无需任何额外系统授权或配置。\n\n"
-        @"【❓ 为什么在系统设置“相机扩展”中看不到 ACast？】\n"
-        @"macOS 系统完整性保护 (SIP) 规定：只有拥有苹果官方付费开发者证书 (Team ID) 的 App 才能将新的扩展直接写入“系统设置 > 通用 > 登录项与扩展 > 相机扩展”列表中。开源/个人构建版本会被系统安全拦截（错误码 2）。\n\n"
-        @"【🛠️ 若需要强制注册 ACast 独立扩展】\n"
-        @"您可以在终端中开启开发者扩展模式：\n"
+        @"在 Mac 上使用 Android 摄像头有两种可靠方案：\n\n"
+        @"【方案一：借助 OBS 虚拟摄像机（已安装 OBS 推荐）】\n"
+        @"由于 OBS Virtual Camera 限制必须由 OBS 进程主控调度。您只需在 OBS 中添加【窗口采集】（选择 ACast 手机画面）或【媒体源】(http://手机IP:8088/live)，然后点击 OBS 右下角【启动虚拟摄像机】即可在 Zoom/FaceTime 瞬间秒出画面，彻底告别黑屏！\n\n"
+        @"【方案二：激活 ACast 专属独立原生相机扩展】\n"
+        @"ACast 内置了完全独立的现代 CoreMediaIO 相机系统扩展。因开源构建未包含付费苹果开发者证书，只需在终端开启开发者扩展模式：\n"
         @"  sudo systemextensionsctl developer on\n"
-        @"开启后点击“立即提交注册”即可。"];
-    [alert addButtonWithTitle:@"知道了 (使用直通模式)"];
+        @"开启后点击“立即提交注册”，即可在系统设置中启用【ACast 虚拟摄像头】，在 Zoom/FaceTime 独立选用！"];
+    [alert addButtonWithTitle:@"知道了"];
     [alert addButtonWithTitle:@"立即提交注册 ACast 扩展"];
     [alert addButtonWithTitle:@"复制开发者命令"];
 
