@@ -16,6 +16,7 @@ import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -47,6 +48,7 @@ public class ScreenCaptureService extends Service {
     private Thread encoderThread;
     private PowerManager.WakeLock wakeLock;
     private PowerManager.WakeLock screenWakeLock;
+    private WifiManager.WifiLock wifiLock;
 
     private int cachedWidth = 1080;
     private int cachedHeight = 1920;
@@ -213,6 +215,18 @@ public class ScreenCaptureService extends Service {
             Log.w(TAG, "获取 WakeLock 异常: " + t.getMessage());
         }
 
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "acast:screencapture_wifilock");
+                wifiLock.setReferenceCounted(false);
+                wifiLock.acquire();
+                Log.i(TAG, "✓ 投屏高性能 WiFi 保持锁已激活 (锁屏防断流)");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "获取 WifiLock 异常: " + t.getMessage());
+        }
+
         // 投屏开始：激活全局屏幕常亮保护，防止手机自动休眠锁屏
         ControlAccessibilityService.setKeepScreenOn(true);
 
@@ -257,7 +271,7 @@ public class ScreenCaptureService extends Service {
                 Log.w(TAG, "onStartCommand 未获取到有效的 resultCode 或 data! resultCode=" + resultCode + ", data=" + data);
             }
         }
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     private void startEncoding() {
@@ -483,6 +497,12 @@ public class ScreenCaptureService extends Service {
                 wakeLock.release();
             } catch (Throwable ignored) {}
             wakeLock = null;
+        }
+        if (wifiLock != null && wifiLock.isHeld()) {
+            try {
+                wifiLock.release();
+            } catch (Throwable ignored) {}
+            wifiLock = null;
         }
 
         // 注意：FastMirrorSender 与 LocalHttpTsServer 属于全局网络通信管道，

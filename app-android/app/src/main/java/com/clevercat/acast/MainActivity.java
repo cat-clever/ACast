@@ -46,6 +46,7 @@ public class MainActivity extends AppCompatActivity {
     private Button btnCameraRes;
     private android.view.TextureView cameraPreviewView;
     private Button btnAccessibility;
+    private Button btnKeepAlive;
     private Button btnScanDevices;
     private Button btnCheckUpdate;
     private TextView tvStatus;
@@ -86,6 +87,7 @@ public class MainActivity extends AppCompatActivity {
         btnCameraRes = findViewById(R.id.btn_camera_res);
         cameraPreviewView = findViewById(R.id.camera_preview_view);
         btnAccessibility = findViewById(R.id.btn_accessibility);
+        btnKeepAlive = findViewById(R.id.btn_keep_alive);
         btnScanDevices = findViewById(R.id.btn_scan_tv);
         btnCheckUpdate = findViewById(R.id.btn_check_update);
         tvStatus = findViewById(R.id.tv_status);
@@ -103,12 +105,16 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        // 点击后台保活与防杀按钮，弹出保活指引与一键忽略电池优化授权
+        btnKeepAlive.setOnClickListener(v -> KeepAliveHelper.showKeepAliveDialog(this, this::updateKeepAliveUi));
+
         deviceAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, deviceList);
         lvDevices.setAdapter(deviceAdapter);
 
         // 初始化界面状态
         updateStatusUi();
         updateAccessibilityUi();
+        updateKeepAliveUi();
 
         // 预先启动本地推流与反控通信端口，随时响应局域网大屏和电脑连接
         try {
@@ -538,6 +544,19 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         updateAccessibilityUi();
+        updateKeepAliveUi();
+    }
+
+    private void updateKeepAliveUi() {
+        if (btnKeepAlive == null) return;
+        boolean isIgnoring = KeepAliveHelper.isIgnoringBatteryOptimizations(this);
+        if (isIgnoring) {
+            btnKeepAlive.setText("✓ 后台保活与防杀：已配置无限制 (锁屏防断连)");
+            btnKeepAlive.setTextColor(0xFF2E7D32); // 绿色
+        } else {
+            btnKeepAlive.setText("⚠️ 后台保活与防杀：未开启白名单 (点击配置)");
+            btnKeepAlive.setTextColor(0xFFE65100); // 警示橙色
+        }
     }
 
     private void updateAccessibilityUi() {

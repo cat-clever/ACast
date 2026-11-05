@@ -39,3 +39,6 @@ local.properties
 *.iml
 .vscode/
 
+# Scratch
+scratch/
+
