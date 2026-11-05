@@ -395,19 +395,16 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 - (void)sendNormalizedTouchWithEvent:(NSEvent *)event action:(uint8_t)action {
     if (NSIsEmptyRect(lastAspectFitRect)) return;
     NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
-    if (loc.x < lastAspectFitRect.origin.x || loc.x > NSMaxX(lastAspectFitRect) ||
-        loc.y < lastAspectFitRect.origin.y || loc.y > NSMaxY(lastAspectFitRect)) {
-        if (action == 2) {
-            acast::desktop::DesktopController::GetInstance().SendTouch(2, 5000, 5000);
-        }
-        return;
-    }
 
     float normX = (loc.x - lastAspectFitRect.origin.x) / lastAspectFitRect.size.width;
     float normY = (NSMaxY(lastAspectFitRect) - loc.y) / lastAspectFitRect.size.height; // 翻转 Y 轴
 
-    uint16_t nx = (uint16_t)(std::max(0.0f, std::min(1.0f, normX)) * 10000.0f);
-    uint16_t ny = (uint16_t)(std::max(0.0f, std::min(1.0f, normY)) * 10000.0f);
+    // 智能边界钳位：即使用户大幅左右滑出手机黑边，手势坐标也稳定在边缘，绝不丢弃滑动轨迹
+    normX = std::max(0.0f, std::min(1.0f, normX));
+    normY = std::max(0.0f, std::min(1.0f, normY));
+
+    uint16_t nx = (uint16_t)(normX * 10000.0f);
+    uint16_t ny = (uint16_t)(normY * 10000.0f);
 
     acast::desktop::DesktopController::GetInstance().SendTouch(action, nx, ny);
 }

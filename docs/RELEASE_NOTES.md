@@ -1,6 +1,15 @@
 # ACast 发版说明
 
-## v0.4.0 更新日志 (最新)
+## v0.4.1 更新日志 (最新)
+
+1. **全面重构连续手势引擎，彻底根治左右实时滑动卡顿抽搐缺陷 (Continuous Follow-up Gesture Engine)**：
+   * **基于 continueStroke 的真实不松手连续滑动**：彻底废弃此前“每隔 12 像素强制执行一次包含 ACTION_UP 完整手势”引发的抽搐跳变（该旧方案导致桌面/翻页容器认为被不断触碰后松手弹回）。在 `ControlAccessibilityService` 中引入连续手势状态机与手势推进泵，通过 `willContinue = true` 配合 Android 8.0+ `continueStroke`，手指在滑动全程始终按压贴紧屏幕无缝移动，完全呈现与真机手指滑动 100% 相同的一体化触摸事件流；
+   * **单击 (Tap) 与拖拽翻页 (Swipe) 智能分流**：位移小于 10 像素严格判定为快速点按（50ms 单击），绝不误触滑动；位移超过 10 像素平滑进入连续手势链条，左右滑屏翻页、刷列表如丝般顺滑自然；
+   * **边缘滑动手势保护 (Boundary Clamping)**：macOS 视窗增强触控坐标边界钳位（Clamp），即使用户大幅度左右拖拽甩动滑出手机视窗黑边边缘，手势坐标也稳定在边界上平滑过渡，绝不丢弃滑动轨迹导致手势断裂。
+
+---
+
+## v0.4.0 更新日志
 
 1. **彻底解决锁屏后解锁屏幕一直是黑的但能控制手机的问题 (Unlock Screen Blackout Fix)**：
    * **VirtualDisplay 亮屏/解锁自动唤醒重绑 (Surface Auto-Recovery)**：在 Android 端 `ScreenCaptureService` 中动态注册全局 `ACTION_SCREEN_ON`、`ACTION_SCREEN_OFF` 和 `ACTION_USER_PRESENT` 广播接收器；当检测到手机亮屏或用户解锁时，自动唤醒 VirtualDisplay 重新建立 Surface 镜像绑定，并接入 `VirtualDisplay.Callback`，彻底解决 Android 系统息屏导致虚拟镜像挂起黑屏的底层缺陷；
