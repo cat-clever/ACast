@@ -384,6 +384,8 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 @interface AppDelegate : NSObject <NSApplicationDelegate> {
     NSWindow* window;
     ScreenMirrorView* screenView;
+    NSWindow* standalonePhoneWindow;
+    ScreenMirrorView* standaloneScreenView;
     NSTextView* logTextView;
     NSTextField* updateBannerLabel;
     NSButton* updateButton;
@@ -414,10 +416,46 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
     NSView* contentView = [window contentView];
 
-    // ==================== 左侧：手机实时投屏与反控视窗 ====================
-    screenView = [[ScreenMirrorView alloc] initWithFrame:NSMakeRect(20, 20, 420, 690)];
+    // ==================== 左侧：手机实时投屏与控制视窗 ====================
+    NSButton* popScreenBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 685, 420, 28)];
+    [popScreenBtn setTitle:@"⤢ 弹出独立控制屏幕窗口"];
+    [popScreenBtn setBezelStyle:NSBezelStyleRounded];
+    [popScreenBtn setTarget:self];
+    [popScreenBtn setAction:@selector(onPopStandaloneWindowClicked:)];
+    [contentView addSubview:popScreenBtn];
+
+    screenView = [[ScreenMirrorView alloc] initWithFrame:NSMakeRect(20, 62, 420, 615)];
     [screenView setAutoresizingMask:NSViewHeightSizable];
     [contentView addSubview:screenView];
+
+    // 控制屏幕底部的虚拟导航三大键 (做在控制屏幕中)
+    NSView* screenNavBar = [[NSView alloc] initWithFrame:NSMakeRect(20, 20, 420, 38)];
+    [screenNavBar setWantsLayer:YES];
+    screenNavBar.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.12 green:0.13 blue:0.15 alpha:1.0].CGColor;
+    screenNavBar.layer.cornerRadius = 8.0;
+
+    NSButton* mainNavBack = [[NSButton alloc] initWithFrame:NSMakeRect(15, 4, 120, 30)];
+    [mainNavBack setTitle:@"◀ 返回 (Back)"];
+    [mainNavBack setBezelStyle:NSBezelStyleRounded];
+    [mainNavBack setTarget:self];
+    [mainNavBack setAction:@selector(onUsbBackClicked:)];
+    [screenNavBar addSubview:mainNavBack];
+
+    NSButton* mainNavHome = [[NSButton alloc] initWithFrame:NSMakeRect(150, 4, 120, 30)];
+    [mainNavHome setTitle:@"○ 桌面 (Home)"];
+    [mainNavHome setBezelStyle:NSBezelStyleRounded];
+    [mainNavHome setTarget:self];
+    [mainNavHome setAction:@selector(onUsbHomeClicked:)];
+    [screenNavBar addSubview:mainNavHome];
+
+    NSButton* mainNavRecents = [[NSButton alloc] initWithFrame:NSMakeRect(285, 4, 120, 30)];
+    [mainNavRecents setTitle:@"▢ 任务 (Tasks)"];
+    [mainNavRecents setBezelStyle:NSBezelStyleRounded];
+    [mainNavRecents setTarget:self];
+    [mainNavRecents setAction:@selector(onRecentsClicked:)];
+    [screenNavBar addSubview:mainNavRecents];
+
+    [contentView addSubview:screenNavBar];
 
     // ==================== 右侧控制区基准坐标 ====================
     CGFloat rightX = 460;
@@ -597,11 +635,15 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         });
     });
 
-    // 绑定实时视频流硬解回调
+    // 绑定实时视频流硬解回调 (主视窗与独立控制视窗同步渲染)
     ctl.SetVideoCallback([weakSelf](const uint8_t* data, size_t size, bool is_key, int64_t pts) {
         AppDelegate* strongSelf = weakSelf;
-        if (strongSelf && strongSelf->screenView) {
+        if (!strongSelf) return;
+        if (strongSelf->screenView) {
             [strongSelf->screenView feedVideoPacket:data size:size isKey:is_key pts:pts];
+        }
+        if (strongSelf->standaloneScreenView) {
+            [strongSelf->standaloneScreenView feedVideoPacket:data size:size isKey:is_key pts:pts];
         }
     });
 
@@ -613,11 +655,20 @@ static void DecompressCallback(void* decompressionOutputRefCon,
                 [strongSelf->phoneStatusLabel setStringValue:@"🎉 已直连 (<20ms)"];
                 [strongSelf->phoneStatusLabel setTextColor:[NSColor systemGreenColor]];
                 [strongSelf->connectPhoneBtn setTitle:@"断开连接"];
+
+                // 局域网直连成功后，自动弹出独立的手机控制视窗！
+                [strongSelf showStandalonePhoneWindow];
+                if (strongSelf->standalonePhoneWindow && !address.empty()) {
+                    [strongSelf->standalonePhoneWindow setTitle:[NSString stringWithFormat:@"ACast 手机投屏控制 - %@", SafeStr(address)]];
+                }
             } else {
                 [strongSelf->phoneStatusLabel setStringValue:@"状态: 未连接"];
                 [strongSelf->phoneStatusLabel setTextColor:[NSColor secondaryLabelColor]];
                 [strongSelf->connectPhoneBtn setTitle:@"连接手机"];
                 [strongSelf->screenView clearFrame];
+                if (strongSelf->standaloneScreenView) {
+                    [strongSelf->standaloneScreenView clearFrame];
+                }
             }
         });
     });
@@ -771,6 +822,66 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
 - (void)onRecentsClicked:(id)sender {
     acast::desktop::DesktopController::GetInstance().SendRecentsKey();
+}
+
+- (void)onPopStandaloneWindowClicked:(id)sender {
+    [self showStandalonePhoneWindow];
+}
+
+- (void)showStandalonePhoneWindow {
+    if (!standalonePhoneWindow) {
+        NSRect frame = NSMakeRect(0, 0, 420, 780);
+        NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+        standalonePhoneWindow = [[NSWindow alloc] initWithContentRect:frame
+                                                            styleMask:style
+                                                              backing:NSBackingStoreBuffered
+                                                                defer:NO];
+        [standalonePhoneWindow setTitle:@"ACast 手机投屏控制 (独立视窗)"];
+        [standalonePhoneWindow setMinSize:NSMakeSize(320, 560)];
+        [standalonePhoneWindow center];
+        [standalonePhoneWindow setReleasedWhenClosed:NO];
+
+        NSView* container = [standalonePhoneWindow contentView];
+
+        // 底部 48 像素导航条 (做在控制屏幕中)
+        NSView* navBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 48)];
+        [navBar setAutoresizingMask:NSViewWidthSizable | NSViewMaxYMargin];
+        [navBar setWantsLayer:YES];
+        navBar.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.10 green:0.11 blue:0.13 alpha:1.0].CGColor;
+
+        NSButton* btnBack = [[NSButton alloc] initWithFrame:NSMakeRect(20, 8, 115, 32)];
+        [btnBack setTitle:@"◀ 返回 (Back)"];
+        [btnBack setBezelStyle:NSBezelStyleRounded];
+        [btnBack setTarget:self];
+        [btnBack setAction:@selector(onUsbBackClicked:)];
+        [btnBack setAutoresizingMask:NSViewMaxXMargin];
+        [navBar addSubview:btnBack];
+
+        NSButton* btnHome = [[NSButton alloc] initWithFrame:NSMakeRect(152, 8, 115, 32)];
+        [btnHome setTitle:@"○ 桌面 (Home)"];
+        [btnHome setBezelStyle:NSBezelStyleRounded];
+        [btnHome setTarget:self];
+        [btnHome setAction:@selector(onUsbHomeClicked:)];
+        [btnHome setAutoresizingMask:NSViewMinXMargin | NSViewMaxXMargin];
+        [navBar addSubview:btnHome];
+
+        NSButton* btnRecents = [[NSButton alloc] initWithFrame:NSMakeRect(285, 8, 115, 32)];
+        [btnRecents setTitle:@"▢ 任务 (Tasks)"];
+        [btnRecents setBezelStyle:NSBezelStyleRounded];
+        [btnRecents setTarget:self];
+        [btnRecents setAction:@selector(onRecentsClicked:)];
+        [btnRecents setAutoresizingMask:NSViewMinXMargin];
+        [navBar addSubview:btnRecents];
+
+        [container addSubview:navBar];
+
+        // 上部主体手机投屏画面视窗
+        standaloneScreenView = [[ScreenMirrorView alloc] initWithFrame:NSMakeRect(0, 48, 420, 732)];
+        [standaloneScreenView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [container addSubview:standaloneScreenView];
+    }
+
+    [standalonePhoneWindow makeKeyAndOrderFront:nil];
 }
 
 - (void)onClearLogClicked:(id)sender {

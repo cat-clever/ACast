@@ -307,32 +307,40 @@ public class ControlAccessibilityService extends AccessibilityService {
      * 电脑按键映射：物理键与全局功能键
      */
     public static void injectKey(int keyCode) {
-        if (instance == null) return;
+        if (instance == null) {
+            Log.w(TAG, "injectKey 失败: 无障碍服务未开启或尚未就绪！无法模拟按键 keyCode=" + keyCode);
+            return;
+        }
         sMainHandler.post(() -> {
             if (instance == null) return;
             wakeUpScreenIfNeeded();
+            boolean handled = false;
             switch (keyCode) {
                 case 1: // KEY_BACK
-                    instance.performGlobalAction(GLOBAL_ACTION_BACK);
+                    handled = instance.performGlobalAction(GLOBAL_ACTION_BACK);
                     break;
                 case 2: // KEY_HOME
-                    instance.performGlobalAction(GLOBAL_ACTION_HOME);
+                    handled = instance.performGlobalAction(GLOBAL_ACTION_HOME);
                     break;
                 case 3: // KEY_APP_SWITCH
-                    instance.performGlobalAction(GLOBAL_ACTION_RECENTS);
+                    handled = instance.performGlobalAction(GLOBAL_ACTION_RECENTS);
                     break;
                 case 4: // KEY_POWER
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        instance.performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN);
+                        handled = instance.performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN);
                     }
                     break;
                 case 5: // KEY_NOTIFICATIONS
-                    instance.performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+                    handled = instance.performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
                     break;
                 case 6: // KEY_QUICK_SETTINGS
-                    instance.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
+                    handled = instance.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
+                    break;
+                default:
+                    Log.w(TAG, "未知的全局按键码: " + keyCode);
                     break;
             }
+            Log.i(TAG, "执行全局按键映射: keyCode=" + keyCode + ", 成功=" + handled);
         });
     }
 }

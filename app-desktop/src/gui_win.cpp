@@ -23,6 +23,10 @@
 #define IDC_COMBO_PHONE        1013
 #define IDC_LABEL_PHONE_STATUS 1015
 #define IDC_BTN_USB_RECENTS    1016
+#define IDC_BTN_SHOW_PHONE     1017
+#define IDC_PHONE_BTN_BACK     1020
+#define IDC_PHONE_BTN_HOME     1021
+#define IDC_PHONE_BTN_RECENTS  1022
 
 #define WM_ACAST_LOG           (WM_USER + 101)
 #define WM_ACAST_USB_UPDATE    (WM_USER + 103)
@@ -107,6 +111,143 @@ static void ReloadPhoneComboBox() {
     }
 }
 
+static HWND g_hPhoneWnd = NULL;
+static HWND g_hPhoneBtnBack = NULL;
+static HWND g_hPhoneBtnHome = NULL;
+static HWND g_hPhoneBtnRecents = NULL;
+
+static void ShowStandalonePhoneWindow(bool show) {
+    if (!g_hPhoneWnd) {
+        HINSTANCE hInstance = GetModuleHandle(NULL);
+        g_hPhoneWnd = CreateWindowExW(
+            WS_EX_APPWINDOW,
+            L"ACastPhoneWindowClass",
+            L"ACast 手机投屏控制 (支持鼠标滑动 / 文本输入 / 导航键)",
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT, CW_USEDEFAULT, 420, 780,
+            NULL, NULL, hInstance, NULL
+        );
+    }
+    if (g_hPhoneWnd) {
+        ShowWindow(g_hPhoneWnd, show ? SW_SHOW : SW_HIDE);
+        if (show) {
+            SetForegroundWindow(g_hPhoneWnd);
+        }
+    }
+}
+
+LRESULT CALLBACK PhoneWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        HINSTANCE hInst = ((LPCREATESTRUCT)lParam)->hInstance;
+        g_hPhoneBtnBack = CreateWindowExW(0, L"BUTTON", L"◀ 返回 (Back)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 15, 700, 115, 32, hWnd, (HMENU)IDC_PHONE_BTN_BACK, hInst, NULL);
+        SendMessageW(g_hPhoneBtnBack, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+        g_hPhoneBtnHome = CreateWindowExW(0, L"BUTTON", L"○ 桌面 (Home)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 145, 700, 115, 32, hWnd, (HMENU)IDC_PHONE_BTN_HOME, hInst, NULL);
+        SendMessageW(g_hPhoneBtnHome, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+        g_hPhoneBtnRecents = CreateWindowExW(0, L"BUTTON", L"▢ 任务 (Tasks)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 275, 700, 115, 32, hWnd, (HMENU)IDC_PHONE_BTN_RECENTS, hInst, NULL);
+        SendMessageW(g_hPhoneBtnRecents, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+        break;
+    }
+    case WM_SIZE: {
+        int w = LOWORD(lParam);
+        int h = HIWORD(lParam);
+        int btnW = (w - 40) / 3;
+        if (btnW < 80) btnW = 80;
+        int btnH = 34;
+        int btnY = h - btnH - 10;
+        if (g_hPhoneBtnBack) MoveWindow(g_hPhoneBtnBack, 10, btnY, btnW, btnH, TRUE);
+        if (g_hPhoneBtnHome) MoveWindow(g_hPhoneBtnHome, 15 + btnW, btnY, btnW, btnH, TRUE);
+        if (g_hPhoneBtnRecents) MoveWindow(g_hPhoneBtnRecents, 20 + btnW * 2, btnY, btnW, btnH, TRUE);
+        InvalidateRect(hWnd, NULL, FALSE);
+        break;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        if (id == IDC_PHONE_BTN_BACK) {
+            acast::desktop::DesktopController::GetInstance().SendBackKey();
+        } else if (id == IDC_PHONE_BTN_HOME) {
+            acast::desktop::DesktopController::GetInstance().SendHomeKey();
+        } else if (id == IDC_PHONE_BTN_RECENTS) {
+            acast::desktop::DesktopController::GetInstance().SendRecentsKey();
+        }
+        break;
+    }
+    case WM_RBUTTONDOWN: {
+        acast::desktop::DesktopController::GetInstance().SendBackKey();
+        break;
+    }
+    case WM_LBUTTONDOWN:
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONUP: {
+        if (msg == WM_MOUSEMOVE && !(wParam & MK_LBUTTON)) break;
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        int viewH = rc.bottom - 52;
+        if (viewH <= 0 || rc.right <= 0) break;
+        int x = LOWORD(lParam);
+        int y = HIWORD(lParam);
+        if (y < 0 || y > viewH || x < 0 || x > rc.right) break;
+        uint16_t normX = (uint16_t)((x * 10000) / rc.right);
+        uint16_t normY = (uint16_t)((y * 10000) / viewH);
+        uint8_t action = (msg == WM_LBUTTONDOWN) ? 0 : (msg == WM_MOUSEMOVE ? 1 : 2);
+        acast::desktop::DesktopController::GetInstance().SendTouch(action, normX, normY);
+        break;
+    }
+    case WM_KEYDOWN: {
+        if (wParam == VK_ESCAPE) {
+            acast::desktop::DesktopController::GetInstance().SendBackKey();
+        } else if (wParam == VK_RETURN) {
+            acast::desktop::DesktopController::GetInstance().SendKey(8);
+        } else if (wParam == VK_BACK) {
+            acast::desktop::DesktopController::GetInstance().SendKey(7);
+        }
+        break;
+    }
+    case WM_CHAR: {
+        if (wParam >= 32) {
+            wchar_t wch = (wchar_t)wParam;
+            char utf8[8] = {0};
+            WideCharToMultiByte(CP_UTF8, 0, &wch, 1, utf8, sizeof(utf8), NULL, NULL);
+            acast::desktop::DesktopController::GetInstance().SendTextInput(utf8);
+        }
+        break;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        RECT screenRc = rc;
+        screenRc.bottom -= 52;
+        HBRUSH bgBrush = CreateSolidBrush(RGB(18, 20, 24));
+        FillRect(hdc, &screenRc, bgBrush);
+        DeleteObject(bgBrush);
+
+        RECT navRc = rc;
+        navRc.top = rc.bottom - 52;
+        HBRUSH navBrush = CreateSolidBrush(RGB(28, 30, 34));
+        FillRect(hdc, &navRc, navBrush);
+        DeleteObject(navBrush);
+
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(180, 185, 195));
+        SelectObject(hdc, g_hFontNormal);
+        DrawTextW(hdc, L"📱 手机投屏控制视窗\n(支持鼠标滑动点击、右键返回、键盘输入)\n底部直接内置系统返回、桌面与任务按键", -1, &screenRc, DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        EndPaint(hWnd, &ps);
+        break;
+    }
+    case WM_CLOSE: {
+        ShowWindow(hWnd, SW_HIDE);
+        return 0;
+    }
+    default:
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE:
@@ -142,6 +283,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
         } else if (id == IDC_BTN_REFRESH_PHONE) {
             acast::desktop::DesktopController::GetInstance().RefreshPhones();
+        } else if (id == IDC_BTN_SHOW_PHONE) {
+            ShowStandalonePhoneWindow(true);
         } else if (id == IDC_BTN_USB_BACK) {
             acast::desktop::DesktopController::GetInstance().SendBackKey();
         } else if (id == IDC_BTN_USB_HOME) {
@@ -180,6 +323,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 std::string text = "✓ 已直连: " + *pAddr + " (延迟<20ms)";
                 SetWindowTextW(g_hLabelPhoneStatus, Utf8ToWide(text).c_str());
                 SetWindowTextW(g_hBtnConnectPhone, L"断开连接");
+                ShowStandalonePhoneWindow(true);
             } else {
                 SetWindowTextW(g_hLabelPhoneStatus, L"状态: 未连接");
                 SetWindowTextW(g_hBtnConnectPhone, L"连接手机");
@@ -253,6 +397,17 @@ int RunDesktopApp(int argc, char* argv[]) {
     wc.lpszClassName = L"ACastDesktopWindowClass";
     RegisterClassExW(&wc);
 
+    // 注册独立手机控制视窗类
+    WNDCLASSEXW pwc = {0};
+    pwc.cbSize = sizeof(WNDCLASSEXW);
+    pwc.style = CS_HREDRAW | CS_VREDRAW;
+    pwc.lpfnWndProc = PhoneWndProc;
+    pwc.hInstance = hInstance;
+    pwc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    pwc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    pwc.lpszClassName = L"ACastPhoneWindowClass";
+    RegisterClassExW(&pwc);
+
     g_hFontNormal = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
     g_hFontBold   = CreateFontW(-14, 0, 0, 0, FW_BOLD,   FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
     g_hFontMono   = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
@@ -305,16 +460,19 @@ int RunDesktopApp(int argc, char* argv[]) {
     SendMessageW(g_hLabelPhoneStatus, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
     // --- 第 2 行：USB 状态与反控按键 ---
-    g_hLabelUsb = CreateWindowExW(0, L"STATIC", L"正在检测 USB 手机...", WS_CHILD | WS_VISIBLE | SS_LEFT, 35, 150, 360, 22, g_hWnd, (HMENU)IDC_LABEL_USB_STATUS, hInstance, NULL);
+    g_hLabelUsb = CreateWindowExW(0, L"STATIC", L"正在检测 USB 手机...", WS_CHILD | WS_VISIBLE | SS_LEFT, 35, 150, 230, 22, g_hWnd, (HMENU)IDC_LABEL_USB_STATUS, hInstance, NULL);
     SendMessageW(g_hLabelUsb, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    HWND hBtnBack = CreateWindowExW(0, L"BUTTON", L"返回 (Back)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 408, 146, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_BACK, hInstance, NULL);
+    HWND hBtnShowPhone = CreateWindowExW(0, L"BUTTON", L"🖥️ 独立控制屏幕", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 275, 146, 125, 28, g_hWnd, (HMENU)IDC_BTN_SHOW_PHONE, hInstance, NULL);
+    SendMessageW(hBtnShowPhone, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+    HWND hBtnBack = CreateWindowExW(0, L"BUTTON", L"◀ 返回", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 410, 146, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_BACK, hInstance, NULL);
     SendMessageW(hBtnBack, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    HWND hBtnHome = CreateWindowExW(0, L"BUTTON", L"桌面 (Home)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 513, 146, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_HOME, hInstance, NULL);
+    HWND hBtnHome = CreateWindowExW(0, L"BUTTON", L"○ 桌面", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 515, 146, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_HOME, hInstance, NULL);
     SendMessageW(hBtnHome, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    HWND hBtnRecents = CreateWindowExW(0, L"BUTTON", L"任务 (Tasks)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 618, 146, 105, 28, g_hWnd, (HMENU)IDC_BTN_USB_RECENTS, hInstance, NULL);
+    HWND hBtnRecents = CreateWindowExW(0, L"BUTTON", L"▢ 任务", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 620, 146, 105, 28, g_hWnd, (HMENU)IDC_BTN_USB_RECENTS, hInstance, NULL);
     SendMessageW(hBtnRecents, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
     // 4. 运行状态与事件日志视窗

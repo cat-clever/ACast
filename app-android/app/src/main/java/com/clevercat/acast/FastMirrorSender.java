@@ -13,7 +13,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class FastMirrorSender {
 
     private static final String TAG = "FastMirrorSender";
-    private static final short MAGIC = (short) 0x4D46; // "FM"
+    private static final short MAGIC = (short) 0x4D46; // "FM" / "MF"
+    private static final short MAGIC_ALT = (short) 0x464D;
 
     private static final byte MSG_VIDEO_FRAME = 0x06;
     private static final byte MSG_AUDIO_FRAME = 0x07;
@@ -21,7 +22,9 @@ public class FastMirrorSender {
     private static final byte MSG_TOUCH_MOVE = 0x11;
     private static final byte MSG_TOUCH_UP = 0x12;
     private static final byte MSG_KEY_DOWN = 0x20;
+    private static final byte MSG_KEY_UP = 0x21;
     private static final byte MSG_TEXT_INPUT = 0x22;
+    private static final byte MSG_SYSTEM_KEY = 0x23;
 
     private static final FastMirrorSender INSTANCE = new FastMirrorSender();
 
@@ -90,7 +93,10 @@ public class FastMirrorSender {
 
                 ByteBuffer bb = ByteBuffer.wrap(headerBuf).order(ByteOrder.BIG_ENDIAN);
                 short magic = bb.getShort();
-                if (magic != MAGIC) continue;
+                if (magic != MAGIC && magic != MAGIC_ALT) {
+                    Log.w(TAG, "FastMirror 忽略未知协议魔数: 0x" + Integer.toHexString(magic & 0xFFFF));
+                    continue;
+                }
 
                 byte msgType = bb.get();
                 byte flags = bb.get();
@@ -112,9 +118,10 @@ public class FastMirrorSender {
                         // 委托无障碍服务执行手势模拟
                         ControlAccessibilityService.injectTouch(msgType, x & 0xFFFF, y & 0xFFFF);
                     }
-                } else if (msgType == MSG_KEY_DOWN) {
+                } else if (msgType == MSG_KEY_DOWN || msgType == MSG_SYSTEM_KEY) {
                     if (payloadLen >= 2) {
                         short keyCode = pb.getShort();
+                        Log.i(TAG, "FastMirror 收到按键指令 (type=0x" + Integer.toHexString(msgType & 0xFF) + "): keyCode=" + keyCode);
                         ControlAccessibilityService.injectKey(keyCode);
                     }
                 } else if (msgType == MSG_TEXT_INPUT) {

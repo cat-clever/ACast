@@ -210,7 +210,7 @@ void FastMirrorClient::ReceiveLoop() {
         if (!read_ok || !is_connected_) break;
 
         uint16_t magic = (static_cast<uint16_t>(header_buf[0]) << 8) | header_buf[1];
-        if (magic != MAGIC_NUMBER) {
+        if (magic != MAGIC_NUMBER && magic != 0x464D && magic != 0x4D46) {
             continue;
         }
 
