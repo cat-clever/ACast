@@ -18,6 +18,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Surface;
@@ -42,6 +43,7 @@ public class ScreenCaptureService extends Service {
 
     private boolean isEncoding = false;
     private Thread encoderThread;
+    private PowerManager.WakeLock wakeLock;
 
     private static ScreenCaptureService sInstance;
 
@@ -79,6 +81,19 @@ public class ScreenCaptureService extends Service {
         } else {
             startForeground(NOTIFICATION_ID, notification);
         }
+
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "acast:screencapture_wakelock");
+                wakeLock.acquire();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "获取 WakeLock 异常: " + t.getMessage());
+        }
+
+        // 投屏开始：激活全局屏幕常亮保护，防止手机自动休眠锁屏
+        ControlAccessibilityService.setKeepScreenOn(true);
 
         try {
             // 启动 FastMirror 桌面反控通信服务
@@ -315,10 +330,19 @@ public class ScreenCaptureService extends Service {
             } catch (Throwable ignored) {}
             mediaProjection = null;
         }
-        try {
-            FastMirrorSender.getInstance().stopServer();
-            LocalHttpTsServer.getInstance().stopServer();
-        } catch (Throwable ignored) {}
+        // 解除屏幕常亮保护
+        ControlAccessibilityService.setKeepScreenOn(false);
+
+        // 释放 CPU WakeLock
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try {
+                wakeLock.release();
+            } catch (Throwable ignored) {}
+            wakeLock = null;
+        }
+
+        // 注意：FastMirrorSender 与 LocalHttpTsServer 属于全局网络通信管道，
+        // 保持长驻，切勿随 ScreenCaptureService 销毁而暴力关闭，防止控制端断开连接。
     }
 
     @Nullable

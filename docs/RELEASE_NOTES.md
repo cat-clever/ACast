@@ -1,6 +1,20 @@
 # ACast 发版说明
 
-## v0.3.3 更新日志 (最新)
+## v0.3.4 更新日志 (最新)
+
+1. **彻底恢复控制端对手机的鼠标与按键反控 (Mouse & Touch Control)**：
+   * **主线程调度与手势容错 (Path Length Fix)**：针对 Android 14/15/16 (如小米 HyperOS) 系统手势框架对 Path 长度必须非零的限制，在 `ControlAccessibilityService` 中增加点按微位移容错 (+1.0f)，并将所有 `dispatchGesture` 与按键模拟强制调度至主线程 (Main Looper)，杜绝子线程工作队列导致的注入失败或 Empty Path 异常；
+   * **物理像素高精度映射 (RealMetrics)**：使用 `getRealMetrics` 精确匹配全面屏、打孔屏的真实物理像素分辨率；
+   * **手机端无障碍服务一键引导**：在手机端主界面添加【🖱️ 电脑鼠标反控】状态卡片，醒目提示无障碍权限状态并支持一键直达系统设置授权。
+2. **根治手机自动锁屏与连接断开问题 (Keep Screen On & Persistent Link)**：
+   * **全局屏幕常亮保护 (Accessibility Overlay)**：投屏期间利用无障碍服务在顶层挂载 1x1 像素透明 Overlay 窗口并附加 `FLAG_KEEP_SCREEN_ON`，无论手机切到桌面还是其他第三方 App，投屏期间均保持常亮不自动锁屏休眠；
+   * **CPU 保活 WakeLock**：在 `ScreenCaptureService` 中申请 `PowerManager.PARTIAL_WAKE_LOCK`，杜绝后台低功耗挂起；
+   * **解耦服务生命周期**：移除 `ScreenCaptureService.onDestroy` 中对 `FastMirrorSender` 与 `LocalHttpTsServer` 的暴力关闭，网络通道始终长驻不切断；
+   * **熄屏鼠标操作自动唤醒**：在手机熄屏状态下收到控制端鼠标点击指令时，自动获取唤醒锁点亮屏幕。
+
+---
+
+## v0.3.3 更新日志
 
 1. **彻底解决 Windows 控制端文字乱码 (Mojibake)**：
    * **全局开启 MSVC `/utf-8` 参数**：为 MSVC 编译系统强制注入 `/utf-8` 参数，确保所有 C++ 源码、宽字符字面量与日志在 GitHub Actions 英文环境编译时正确解析为 UTF-8 / UTF-16，杜绝按钮与标签乱码；

@@ -10,7 +10,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
+import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
@@ -36,6 +38,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_PERMISSIONS_CODE = 2002;
 
     private Button btnToggleCapture;
+    private Button btnAccessibility;
     private Button btnScanDevices;
     private Button btnCheckUpdate;
     private TextView tvStatus;
@@ -62,20 +65,36 @@ public class MainActivity extends AppCompatActivity {
             });
         });
 
+        // 投屏主界面保持屏幕常亮
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
         setContentView(R.layout.activity_main);
 
         btnToggleCapture = findViewById(R.id.btn_toggle_capture);
+        btnAccessibility = findViewById(R.id.btn_accessibility);
         btnScanDevices = findViewById(R.id.btn_scan_tv);
         btnCheckUpdate = findViewById(R.id.btn_check_update);
         tvStatus = findViewById(R.id.tv_status);
         tvDeviceHeader = findViewById(R.id.tv_device_header);
         lvDevices = findViewById(R.id.lv_devices);
 
+        // 点击无障碍按钮，一键直达系统无障碍设置开启反控
+        btnAccessibility.setOnClickListener(v -> {
+            try {
+                Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+                startActivity(intent);
+                Toast.makeText(this, "请在已安装的服务中点击【ACast 投屏】，开启无障碍权限即可支持电脑鼠标反控！", Toast.LENGTH_LONG).show();
+            } catch (Throwable t) {
+                Toast.makeText(this, "打开无障碍设置异常，请手动前往手机设置开启", Toast.LENGTH_SHORT).show();
+            }
+        });
+
         deviceAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, deviceList);
         lvDevices.setAdapter(deviceAdapter);
 
         // 初始化界面状态
         updateStatusUi();
+        updateAccessibilityUi();
 
         // 预先启动本地推流与反控通信端口，随时响应局域网大屏和电脑连接
         try {
@@ -402,6 +421,25 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateAccessibilityUi();
+    }
+
+    private void updateAccessibilityUi() {
+        if (btnAccessibility == null) return;
+        boolean enabled = ControlAccessibilityService.isAvailable() ||
+                ControlAccessibilityService.isAccessibilitySettingsOn(this);
+        if (enabled) {
+            btnAccessibility.setText("✓ 电脑鼠标反控：已就绪 (支持鼠标点击/拖拽/打字)");
+            btnAccessibility.setTextColor(0xFF2E7D32); // 绿色
+        } else {
+            btnAccessibility.setText("⚠️ 电脑鼠标反控：未开启 (点击开启无障碍权限)");
+            btnAccessibility.setTextColor(0xFFE65100); // 警示橙色
+        }
     }
 
     @Override
