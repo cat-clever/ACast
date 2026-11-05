@@ -21,6 +21,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
 public class ControlAccessibilityService extends AccessibilityService {
 
@@ -255,6 +256,9 @@ public class ControlAccessibilityService extends AccessibilityService {
             }
 
             try {
+                GestureDescription.Builder builder = new GestureDescription.Builder();
+                GestureDescription.StrokeDescription stroke;
+
                 Path path = new Path();
                 path.moveTo(startX, startY);
                 if (dist < 1.0f) {
