@@ -1457,6 +1457,12 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     if (code == 53) { // ESC -> 返回
         ctl.SendBackKey();
         return;
+    } else if (code == 122) { // F1 -> 下拉展开系统通知栏
+        ctl.SendKey(5);
+        return;
+    } else if (code == 120) { // F2 -> 下拉展开快捷设置控制中心
+        ctl.SendKey(6);
+        return;
     } else if (code == 36) { // Return -> 回车
         ctl.SendKey(8);
         return;

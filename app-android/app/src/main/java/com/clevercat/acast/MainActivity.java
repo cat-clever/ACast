@@ -397,7 +397,17 @@ public class MainActivity extends AppCompatActivity {
         try {
             MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
             if (manager != null) {
-                startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
+                Intent captureIntent;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    // Android 14+ 强制指定捕获整个默认屏幕，防止系统默认仅录制单个应用导致状态栏/通知栏/控制中心菜单被系统隐私过滤
+                    android.media.projection.MediaProjectionConfig config =
+                            android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay();
+                    captureIntent = manager.createScreenCaptureIntent(config);
+                    Log.i(TAG, "已为 Android 14+ 配置 createConfigForDefaultDisplay 捕获完整系统屏幕(包含状态栏/通知栏/控制中心)");
+                } else {
+                    captureIntent = manager.createScreenCaptureIntent();
+                }
+                startActivityForResult(captureIntent, REQUEST_MEDIA_PROJECTION);
             } else {
                 Toast.makeText(this, "设备不支持屏幕录制", Toast.LENGTH_SHORT).show();
             }

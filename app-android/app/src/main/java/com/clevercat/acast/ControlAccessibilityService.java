@@ -432,6 +432,24 @@ public class ControlAccessibilityService extends AccessibilityService {
 
             } else {
                 // 滑动手势：
+                // 特殊场景：如果是从屏幕顶部状态栏（downY <= 90px）向下拉动，优先触发系统级展开通知栏或快捷控制中心
+                if (downY <= 90.0f && totalDy > 60.0f && Math.abs(totalDy) > Math.abs(totalDx) * 1.2f) {
+                    sMainHandler.post(() -> {
+                        if (instance == null) return;
+                        if (totalDy > 250.0f) {
+                            Log.i(TAG, "✓ 屏幕顶端深下拉，唤起原生快捷设置控制中心 (GLOBAL_ACTION_QUICK_SETTINGS)");
+                            instance.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
+                        } else {
+                            Log.i(TAG, "✓ 屏幕顶端下拉，唤起原生状态栏通知中心 (GLOBAL_ACTION_NOTIFICATIONS)");
+                            instance.performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+                        }
+                    });
+                    currentStroke = null;
+                    isDispatching = false;
+                    pendingFinalUp = false;
+                    return;
+                }
+
                 // 场景 A：快速甩动翻页（Fling/Swipe），位移明确（> 60px）且耗时较短（< 450ms），且此前尚未派发连续碎段
                 if (currentStroke == null && (Math.abs(totalDx) > 60.0f || Math.abs(totalDy) > 60.0f) && duration < 450L) {
                     sMainHandler.post(() -> {
