@@ -8,6 +8,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <deque>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
 #include <sys/stat.h>
 
 #if defined(__APPLE__)
@@ -43,6 +48,87 @@ void MkdirRecursive(const std::string& dir) {
         }
     }
 }
+
+struct AdbAsyncJob {
+    std::string cmd;
+    bool is_gesture;
+};
+
+// 后台异步工作队列：彻底解放 UI 主线程，防止网络 ADB 阻塞导致控制台无响应/转彩球
+class AdbWorkerQueue {
+public:
+    static AdbWorkerQueue& GetInstance() {
+        static AdbWorkerQueue instance;
+        return instance;
+    }
+
+    void Enqueue(const std::string& cmd, bool is_gesture) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopped_) return;
+
+            // 背压保护：高频触控手势如果积压超过 2 个，自动丢弃旧触控，避免网络 ADB 累积巨大延时
+            if (is_gesture) {
+                int gesture_count = 0;
+                for (const auto& job : queue_) {
+                    if (job.is_gesture) gesture_count++;
+                }
+                if (gesture_count >= 2) {
+                    return;
+                }
+            }
+
+            queue_.push_back({cmd, is_gesture});
+        }
+        cv_.notify_one();
+    }
+
+    void Stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopped_) return;
+            stopped_ = true;
+        }
+        cv_.notify_all();
+        if (worker_thread_.joinable()) {
+            worker_thread_.join();
+        }
+    }
+
+private:
+    AdbWorkerQueue() : stopped_(false) {
+        worker_thread_ = std::thread([this]() {
+            while (true) {
+                AdbAsyncJob job;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [this]() {
+                        return stopped_ || !queue_.empty();
+                    });
+                    if (stopped_ && queue_.empty()) {
+                        break;
+                    }
+                    job = queue_.front();
+                    queue_.pop_front();
+                }
+
+                if (!job.cmd.empty()) {
+                    acast::process::RunSilent(job.cmd);
+                }
+            }
+        });
+    }
+
+    ~AdbWorkerQueue() {
+        Stop();
+    }
+
+    std::deque<AdbAsyncJob> queue_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::atomic<bool> stopped_{false};
+    std::thread worker_thread_;
+};
 
 } // namespace
 
@@ -311,12 +397,17 @@ bool AdbTunnel::ForwardPort(const std::string& serial, int local_port, int devic
     return true;
 }
 
+void AdbTunnel::ExecuteCommandAsync(const std::string& cmd, bool is_gesture) {
+    if (cmd.empty()) return;
+    AdbWorkerQueue::GetInstance().Enqueue(cmd, is_gesture);
+}
+
 bool AdbTunnel::InjectTap(const std::string& serial, int x, int y) {
     std::string adb = GetAdbPath();
     if (adb.empty()) return false;
     std::ostringstream cmd;
     cmd << adb << " -s " << serial << " shell input tap " << x << " " << y;
-    ExecuteCommand(cmd.str());
+    ExecuteCommandAsync(cmd.str(), true); // 手势标记为 true，支持背压丢弃过时点
     return true;
 }
 
@@ -325,7 +416,7 @@ bool AdbTunnel::InjectSwipe(const std::string& serial, int x1, int y1, int x2, i
     if (adb.empty()) return false;
     std::ostringstream cmd;
     cmd << adb << " -s " << serial << " shell input swipe " << x1 << " " << y1 << " " << x2 << " " << y2 << " " << duration_ms;
-    ExecuteCommand(cmd.str());
+    ExecuteCommandAsync(cmd.str(), true); // 手势标记为 true
     return true;
 }
 
@@ -334,7 +425,7 @@ bool AdbTunnel::InjectText(const std::string& serial, const std::string& text) {
     if (adb.empty()) return false;
     std::ostringstream cmd;
     cmd << adb << " -s " << serial << " shell input text \"" << text << "\"";
-    ExecuteCommand(cmd.str());
+    ExecuteCommandAsync(cmd.str(), false); // 文本输入不丢弃
     return true;
 }
 
@@ -343,7 +434,7 @@ bool AdbTunnel::InjectKeyEvent(const std::string& serial, int android_keycode) {
     if (adb.empty()) return false;
     std::ostringstream cmd;
     cmd << adb << " -s " << serial << " shell input keyevent " << android_keycode;
-    ExecuteCommand(cmd.str());
+    ExecuteCommandAsync(cmd.str(), false); // 功能按键不丢弃
     return true;
 }
 

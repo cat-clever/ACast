@@ -99,6 +99,7 @@ public class MainActivity extends AppCompatActivity {
         // 预先启动本地推流与反控通信端口，随时响应局域网大屏和电脑连接
         try {
             LocalHttpTsServer.getInstance().startServer(8088);
+            FastMirrorSender.getInstance().setContext(this);
             FastMirrorSender.getInstance().startServer(19999);
         } catch (Throwable t) {
             Log.w(TAG, "预启动本地推流端口异常: " + t.getMessage());

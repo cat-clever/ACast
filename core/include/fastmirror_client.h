@@ -46,6 +46,7 @@ public:
 private:
     bool SendRawPacket(MessageType type, const uint8_t* payload, uint32_t payload_len);
     void ReceiveLoop();
+    void HeartbeatLoop();
 
     std::atomic<bool> is_connected_{false};
     std::string connected_ip_;
@@ -54,6 +55,9 @@ private:
     std::mutex send_mutex_;
 
     std::thread recv_thread_;
+    std::thread heartbeat_thread_;
+    std::atomic<bool> stop_heartbeat_{false};
+
     std::mutex cb_mutex_;
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;

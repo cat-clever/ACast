@@ -29,7 +29,7 @@ public:
     // 端口映射：把 PC 本地端口转发给 Android 手机内部端口 (adb forward tcp:19999 tcp:19999)
     static bool ForwardPort(const std::string& serial, int local_port, int device_port);
 
-    // 反向控制注入：原生 input 命令
+    // 异步非阻塞反向控制注入（UI 线程耗时 0ms，彻底杜绝主线程假死与彩球）
     static bool InjectTap(const std::string& serial, int x, int y);
     static bool InjectSwipe(const std::string& serial, int x1, int y1, int x2, int y2, int duration_ms = 100);
     static bool InjectText(const std::string& serial, const std::string& text);
@@ -38,8 +38,13 @@ public:
     static bool InjectHome(const std::string& serial);
     static bool InjectAppSwitch(const std::string& serial);
 
-private:
+    // 同步执行（仅用于初始化检测、获取设备列表等低频后台线程操作）
     static std::string ExecuteCommand(const std::string& cmd);
+
+    // 异步非阻塞执行（用于高频反向控制，支持手势背压防积压丢弃）
+    static void ExecuteCommandAsync(const std::string& cmd, bool is_gesture = false);
+
+private:
     static std::string GetCurrentExecutablePath();
     static bool EnsureBuiltinAdbDownloaded();
 };

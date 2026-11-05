@@ -16,6 +16,8 @@ public class FastMirrorSender {
     private static final short MAGIC = (short) 0x4D46; // "FM" / "MF"
     private static final short MAGIC_ALT = (short) 0x464D;
 
+    private static final byte MSG_PING = 0x03;
+    private static final byte MSG_PONG = 0x04;
     private static final byte MSG_VIDEO_FRAME = 0x06;
     private static final byte MSG_AUDIO_FRAME = 0x07;
     private static final byte MSG_TOUCH_DOWN = 0x10;
@@ -30,6 +32,14 @@ public class FastMirrorSender {
 
     public static FastMirrorSender getInstance() {
         return INSTANCE;
+    }
+
+    private android.content.Context appContext;
+
+    public void setContext(android.content.Context context) {
+        if (context != null) {
+            this.appContext = context.getApplicationContext();
+        }
     }
 
     private ServerSocket serverSocket;
@@ -86,18 +96,32 @@ public class FastMirrorSender {
     private void handleIncomingControl(Socket client) {
         try {
             InputStream in = client.getInputStream();
+            OutputStream out = client.getOutputStream();
             byte[] headerBuf = new byte[16];
 
             while (isRunning && !client.isClosed()) {
                 if (!readFully(in, headerBuf, 16)) break;
 
-                ByteBuffer bb = ByteBuffer.wrap(headerBuf).order(ByteOrder.BIG_ENDIAN);
-                short magic = bb.getShort();
+                short magic = (short) (((headerBuf[0] & 0xFF) << 8) | (headerBuf[1] & 0xFF));
                 if (magic != MAGIC && magic != MAGIC_ALT) {
-                    Log.w(TAG, "FastMirror 忽略未知协议魔数: 0x" + Integer.toHexString(magic & 0xFFFF));
-                    continue;
+                    Log.w(TAG, "FastMirror 协议字节对齐中: 0x" + Integer.toHexString(magic & 0xFFFF));
+                    boolean aligned = false;
+                    while (isRunning && !client.isClosed()) {
+                        System.arraycopy(headerBuf, 1, headerBuf, 0, 15);
+                        int nextB = in.read();
+                        if (nextB < 0) break;
+                        headerBuf[15] = (byte) nextB;
+                        short testMagic = (short) (((headerBuf[0] & 0xFF) << 8) | (headerBuf[1] & 0xFF));
+                        if (testMagic == MAGIC || testMagic == MAGIC_ALT) {
+                            aligned = true;
+                            break;
+                        }
+                    }
+                    if (!aligned) break;
                 }
 
+                ByteBuffer bb = ByteBuffer.wrap(headerBuf).order(ByteOrder.BIG_ENDIAN);
+                bb.getShort(); // 消耗魔数
                 byte msgType = bb.get();
                 byte flags = bb.get();
                 int payloadLen = bb.getInt();
@@ -105,13 +129,24 @@ public class FastMirrorSender {
 
                 byte[] payload = new byte[payloadLen];
                 if (payloadLen > 0) {
+                    if (payloadLen > 10 * 1024 * 1024) break;
                     if (!readFully(in, payload, payloadLen)) break;
                 }
 
                 // 处理反向控制触控与按键指令
-                ByteBuffer pb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
-                if (msgType == MSG_TOUCH_DOWN || msgType == MSG_TOUCH_MOVE || msgType == MSG_TOUCH_UP) {
+                if (msgType == MSG_PING) {
+                    // 响应保活 PONG 包
+                    ByteBuffer pongBuf = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN);
+                    pongBuf.putShort(MAGIC);
+                    pongBuf.put(MSG_PONG);
+                    pongBuf.put((byte) 0);
+                    pongBuf.putInt(0);
+                    pongBuf.putLong(System.currentTimeMillis());
+                    out.write(pongBuf.array());
+                    out.flush();
+                } else if (msgType == MSG_TOUCH_DOWN || msgType == MSG_TOUCH_MOVE || msgType == MSG_TOUCH_UP) {
                     if (payloadLen >= 5) {
+                        ByteBuffer pb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
                         byte pointerId = pb.get();
                         short x = pb.getShort();
                         short y = pb.getShort();
@@ -120,8 +155,12 @@ public class FastMirrorSender {
                     }
                 } else if (msgType == MSG_KEY_DOWN || msgType == MSG_SYSTEM_KEY) {
                     if (payloadLen >= 2) {
+                        ByteBuffer pb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
                         short keyCode = pb.getShort();
                         Log.i(TAG, "FastMirror 收到按键指令 (type=0x" + Integer.toHexString(msgType & 0xFF) + "): keyCode=" + keyCode);
+                        if (!ControlAccessibilityService.isAvailable() && appContext != null) {
+                            ControlAccessibilityService.showAccessibilityTipToast(appContext);
+                        }
                         ControlAccessibilityService.injectKey(keyCode);
                     }
                 } else if (msgType == MSG_TEXT_INPUT) {

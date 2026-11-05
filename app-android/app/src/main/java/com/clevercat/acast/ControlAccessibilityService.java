@@ -73,6 +73,20 @@ public class ControlAccessibilityService extends AccessibilityService {
     }
 
     /**
+     * 收到反控指令但无障碍服务未就绪时向手机端屏幕展示引导 Toast
+     */
+    public static void showAccessibilityTipToast(Context context) {
+        if (context == null) return;
+        sMainHandler.post(() -> {
+            try {
+                android.widget.Toast.makeText(context.getApplicationContext(),
+                        "💡 ACast 提示：请在手机【系统设置 - 无障碍】中开启【ACast 投屏反控】，以允许电脑控制手机",
+                        android.widget.Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {}
+        });
+    }
+
+    /**
      * 检查系统设置中 ACast 无障碍服务是否已开启
      */
     public static boolean isAccessibilitySettingsOn(Context context) {

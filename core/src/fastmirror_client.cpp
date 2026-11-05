@@ -45,17 +45,19 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
     int nodelay = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
 
-    // 设置接收发送超时
+    // 启用 TCP 保活，保持长连接不被路由器或系统中断
+    int keepalive = 1;
+    setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (const char*)&keepalive, sizeof(keepalive));
+
+    // 设置合理的发送超时（防止网络彻底拥死时无限阻塞）
 #if defined(_WIN32)
-    DWORD tv = timeout_ms;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+    DWORD tv_send = 5000;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_send, sizeof(tv_send));
 #else
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+    struct timeval tv_send;
+    tv_send.tv_sec = 5;
+    tv_send.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_send, sizeof(tv_send));
 #endif
 
     struct sockaddr_in addr;
@@ -76,6 +78,7 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
     connected_ip_ = ip;
     connected_port_ = port;
     is_connected_ = true;
+    stop_heartbeat_ = false;
 
     // 握手包发送
     HandshakeReqPayload req;
@@ -94,14 +97,16 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
 
     SendRawPacket(MessageType::HANDSHAKE_REQ, reinterpret_cast<const uint8_t*>(&req), sizeof(req));
 
-    // 启动持续接收后台线程
+    // 启动持续接收后台线程与定期心跳保活线程
     recv_thread_ = std::thread(&FastMirrorClient::ReceiveLoop, this);
+    heartbeat_thread_ = std::thread(&FastMirrorClient::HeartbeatLoop, this);
 
     return true;
 }
 
 void FastMirrorClient::Disconnect() {
     is_connected_ = false;
+    stop_heartbeat_ = true;
     if (socket_fd_ >= 0) {
         SHUTDOWN_SOCKET(socket_fd_);
         CLOSE_SOCKET(socket_fd_);
@@ -109,6 +114,9 @@ void FastMirrorClient::Disconnect() {
     }
     if (recv_thread_.joinable()) {
         recv_thread_.join();
+    }
+    if (heartbeat_thread_.joinable()) {
+        heartbeat_thread_.join();
     }
     connected_ip_.clear();
     connected_port_ = 0;
@@ -141,11 +149,31 @@ bool FastMirrorClient::SendRawPacket(MessageType type, const uint8_t* payload, u
     std::vector<uint8_t> packet = ProtocolCodec::Pack(type, payload, payload_len);
 
     std::lock_guard<std::mutex> lock(send_mutex_);
+    if (!is_connected_ || socket_fd_ < 0) return false;
+
     int total = (int)packet.size();
-    int sent = (int)send(socket_fd_, reinterpret_cast<const char*>(packet.data()), total, 0);
-    if (sent < total) {
-        Disconnect();
-        return false;
+    int total_sent = 0;
+    while (total_sent < total) {
+        int sent = (int)send(socket_fd_, reinterpret_cast<const char*>(packet.data() + total_sent), total - total_sent, 0);
+        if (sent <= 0) {
+            if (sent < 0) {
+#if defined(_WIN32)
+                int err = WSAGetLastError();
+                if (err == WSAEWOULDBLOCK || err == WSAEINTR) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    continue;
+                }
+#else
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    continue;
+                }
+#endif
+            }
+            Disconnect();
+            return false;
+        }
+        total_sent += sent;
     }
     return true;
 }
@@ -193,15 +221,41 @@ bool FastMirrorClient::SendPing() {
     return SendRawPacket(MessageType::PING, nullptr, 0);
 }
 
+void FastMirrorClient::HeartbeatLoop() {
+    while (is_connected_ && !stop_heartbeat_) {
+        for (int i = 0; i < 40; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!is_connected_ || stop_heartbeat_) return;
+        }
+        if (!is_connected_ || stop_heartbeat_) break;
+        SendPing();
+    }
+}
+
 void FastMirrorClient::ReceiveLoop() {
     uint8_t header_buf[16];
+    size_t recvd = 0;
+
     while (is_connected_ && socket_fd_ >= 0) {
         // 读取 16 字节头部
-        size_t recvd = 0;
         bool read_ok = true;
         while (recvd < 16) {
             int n = recv(socket_fd_, reinterpret_cast<char*>(header_buf + recvd), 16 - recvd, 0);
             if (n <= 0) {
+                if (n < 0) {
+#if defined(_WIN32)
+                    int err = WSAGetLastError();
+                    if (err == WSAEWOULDBLOCK || err == WSAEINTR || err == WSAETIMEDOUT) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        continue;
+                    }
+#else
+                    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        continue;
+                    }
+#endif
+                }
                 read_ok = false;
                 break;
             }
@@ -211,8 +265,12 @@ void FastMirrorClient::ReceiveLoop() {
 
         uint16_t magic = (static_cast<uint16_t>(header_buf[0]) << 8) | header_buf[1];
         if (magic != MAGIC_NUMBER && magic != 0x464D && magic != 0x4D46) {
+            // 滑动窗口探测：后移 1 字节并继续读取 1 字节匹配魔数，杜绝帧边界丢失错位
+            std::memmove(header_buf, header_buf + 1, 15);
+            recvd = 15;
             continue;
         }
+        recvd = 0; // 成功匹配魔数，头部完整消耗
 
         uint8_t msg_type = header_buf[2];
         uint32_t payload_len = (static_cast<uint32_t>(header_buf[4]) << 24) |
@@ -234,6 +292,20 @@ void FastMirrorClient::ReceiveLoop() {
             while (p_recvd < payload_len) {
                 int n = recv(socket_fd_, reinterpret_cast<char*>(payload.data() + p_recvd), payload_len - p_recvd, 0);
                 if (n <= 0) {
+                    if (n < 0) {
+#if defined(_WIN32)
+                        int err = WSAGetLastError();
+                        if (err == WSAEWOULDBLOCK || err == WSAEINTR || err == WSAETIMEDOUT) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            continue;
+                        }
+#else
+                        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            continue;
+                        }
+#endif
+                    }
                     read_ok = false;
                     break;
                 }
@@ -274,6 +346,8 @@ void FastMirrorClient::ReceiveLoop() {
             }
         } else if (msg_type == static_cast<uint8_t>(MessageType::PING)) {
             SendRawPacket(MessageType::PONG, nullptr, 0);
+        } else if (msg_type == static_cast<uint8_t>(MessageType::PONG)) {
+            // 心跳保活回复确认
         }
     }
     is_connected_ = false;

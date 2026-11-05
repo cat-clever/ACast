@@ -1,6 +1,21 @@
 # ACast 发版说明
 
-## v0.3.5 更新日志 (最新)
+## v0.3.6 更新日志 (最新)
+
+1. **彻底根治控制手机时控制台端假死卡顿 (Zero UI Freezing / Beachball Elimination)**：
+   * **ADB 异步非阻塞执行队列 (AdbWorkerQueue)**：将 `InjectTap`、`InjectSwipe`、`InjectText`、`InjectKeyEvent`、`InjectBack`、`InjectHome`、`InjectAppSwitch` 等反控注入命令全面迁移至底层单线程异步工作队列，UI 主线程调用耗时降至 0ms，彻底消除无线 Wi-Fi ADB 网络延迟或进程等待导致的主线程冻结、macOS 彩球（Beachball）和 Windows“未响应”；
+   * **高频触控背压防积压机制 (Backpressure Rate Limiting)**：针对鼠标连续滑动/高频拖拽，工作队列限制最大手势积压量，自动舍弃过时点位，杜绝手势堆叠延迟；功能导航键（返回、桌面、任务、文本输入）保证 100% 按序投递执行。
+2. **FastMirror 私有协议长连接链路稳定性与保活强化**：
+   * **移除误判超时的强制断开**：移除了长连接控制 socket 上强制 3 秒读取超时的限制，替换为系统级 `SO_KEEPALIVE` 长连接保活，杜绝空闲时连接被误判断开回退到慢速 ADB；
+   * **客户端主动心跳机制 (Heartbeat PING/PONG)**：内置后台心跳线程定期向手机发送 `PING (0x03)` 保活包，Android 服务端自动回复 `PONG (0x04)`，防止链路闲置被局域网路由器超时切断；
+   * **全量循环发送与非阻塞重试**：改造 `SendRawPacket` 为 `while (total_sent < total)` 完整发送循环，对网络轻微背压（EAGAIN/EWOULDBLOCK）优雅重试，绝不在部分发送时粗暴断开；
+   * **滑动窗口自愈对齐 (Sliding Window Resync)**：双端（C++ 控制端与 Android 服务端）均实现单字节滑动探测重对齐机制，若网络中存在瞬时脏字节或单字节错位，自动逐字节滑动查找 `MAGIC` 魔数，杜绝帧边界丢失导致的永久解包失效。
+3. **手机端无障碍服务引导 Toast 提示**：
+   * 当用户在电脑控制屏幕上点击“返回”、“桌面”、“任务”等按键，若手机端尚未开启【ACast 投屏反控】无障碍服务，手机屏幕将立即弹出醒目的引导 Toast，清晰提示用户前往系统设置开启授权，杜绝无反馈假象。
+
+---
+
+## v0.3.5 更新日志
 
 1. **控制屏幕支持独立专属窗口 (Standalone Control Window)**：
    * 手机投屏视窗彻底独立化，支持随意缩放拖拽与全屏高清自适应渲染；
