@@ -6,6 +6,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <AVFoundation/AVFoundation.h>
 #import <SystemExtensions/SystemExtensions.h>
+#import <CoreMediaIO/CMIOHardware.h>
 
 #include "gui_interface.h"
 #include "desktop_controller.h"
@@ -152,6 +153,292 @@ private:
     std::vector<int> client_fds_;
 };
 
+// ============================================================================
+// CMIOVirtualCameraBroadcaster: CoreMediaIO 虚拟相机直通广播器
+// 无需注册未签名扩展，直连系统已就绪的 CMIO 相机扩展 (如 OBS Virtual Camera 或 ACast)
+// ============================================================================
+
+class CMIOVirtualCameraBroadcaster {
+public:
+    static CMIOVirtualCameraBroadcaster& GetInstance() {
+        static CMIOVirtualCameraBroadcaster sInstance;
+        return sInstance;
+    }
+
+    struct SinkDeviceInfo {
+        CMIODeviceID deviceId = 0;
+        CMIOStreamID sinkStreamId = 0;
+        std::string name;
+        std::string uid;
+        int targetWidth = 1920;
+        int targetHeight = 1080;
+    };
+
+    std::vector<SinkDeviceInfo> ScanAvailableSinkDevices() {
+        std::vector<SinkDeviceInfo> result;
+        CMIOObjectPropertyAddress prop = {
+            kCMIOHardwarePropertyDevices,
+            kCMIOObjectPropertyScopeGlobal,
+            kCMIOObjectPropertyElementMain
+        };
+        UInt32 dataSize = 0;
+        if (CMIOObjectGetPropertyDataSize(kCMIOObjectSystemObject, &prop, 0, NULL, &dataSize) != noErr || dataSize == 0) {
+            return result;
+        }
+        int count = dataSize / sizeof(CMIOObjectID);
+        std::vector<CMIOObjectID> devices(count);
+        if (CMIOObjectGetPropertyData(kCMIOObjectSystemObject, &prop, 0, NULL, dataSize, &dataSize, devices.data()) != noErr) {
+            return result;
+        }
+
+        for (int i = 0; i < count; i++) {
+            CMIOObjectID devId = devices[i];
+
+            CMIOObjectPropertyAddress streamProp = {
+                kCMIODevicePropertyStreams,
+                kCMIOObjectPropertyScopeGlobal,
+                kCMIOObjectPropertyElementMain
+            };
+            UInt32 streamSize = 0;
+            if (CMIOObjectGetPropertyDataSize(devId, &streamProp, 0, NULL, &streamSize) != noErr || streamSize == 0) continue;
+
+            int streamCount = streamSize / sizeof(CMIOStreamID);
+            std::vector<CMIOStreamID> streams(streamCount);
+            if (CMIOObjectGetPropertyData(devId, &streamProp, 0, NULL, streamSize, &streamSize, streams.data()) != noErr) continue;
+
+            for (CMIOStreamID st : streams) {
+                CMIOObjectPropertyAddress dirProp = {
+                    kCMIOStreamPropertyDirection,
+                    kCMIOObjectPropertyScopeGlobal,
+                    kCMIOObjectPropertyElementMain
+                };
+                UInt32 dir = 0;
+                UInt32 ds = sizeof(dir);
+                if (CMIOObjectGetPropertyData(st, &dirProp, 0, NULL, ds, &ds, &dir) == noErr && dir == 1) {
+                    SinkDeviceInfo info;
+                    info.deviceId = devId;
+                    info.sinkStreamId = st;
+
+                    CMIOObjectPropertyAddress nameProp = {
+                        kCMIOObjectPropertyName,
+                        kCMIOObjectPropertyScopeGlobal,
+                        kCMIOObjectPropertyElementMain
+                    };
+                    CFStringRef nameRef = NULL;
+                    UInt32 s = sizeof(nameRef);
+                    if (CMIOObjectGetPropertyData(devId, &nameProp, 0, NULL, s, &s, &nameRef) == noErr && nameRef) {
+                        info.name = [(__bridge NSString*)nameRef UTF8String];
+                        CFRelease(nameRef);
+                    }
+
+                    CMIOObjectPropertyAddress uidProp = {
+                        kCMIODevicePropertyDeviceUID,
+                        kCMIOObjectPropertyScopeGlobal,
+                        kCMIOObjectPropertyElementMain
+                    };
+                    CFStringRef uidRef = NULL;
+                    s = sizeof(uidRef);
+                    if (CMIOObjectGetPropertyData(devId, &uidProp, 0, NULL, s, &s, &uidRef) == noErr && uidRef) {
+                        info.uid = [(__bridge NSString*)uidRef UTF8String];
+                        CFRelease(uidRef);
+                    }
+
+                    CMIOObjectPropertyAddress fmtProp = {
+                        kCMIOStreamPropertyFormatDescriptions,
+                        kCMIOObjectPropertyScopeGlobal,
+                        kCMIOObjectPropertyElementMain
+                    };
+                    UInt32 fmtSize = 0;
+                    if (CMIOObjectGetPropertyDataSize(st, &fmtProp, 0, NULL, &fmtSize) == noErr && fmtSize > 0) {
+                        CFArrayRef descs = NULL;
+                        if (CMIOObjectGetPropertyData(st, &fmtProp, 0, NULL, fmtSize, &fmtSize, &descs) == noErr && descs) {
+                            if (CFArrayGetCount(descs) > 0) {
+                                CMFormatDescriptionRef fd = (CMFormatDescriptionRef)CFArrayGetValueAtIndex(descs, 0);
+                                CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(fd);
+                                if (dim.width > 0 && dim.height > 0) {
+                                    info.targetWidth = dim.width;
+                                    info.targetHeight = dim.height;
+                                }
+                            }
+                            CFRelease(descs);
+                        }
+                    }
+
+                    result.push_back(info);
+                }
+            }
+        }
+        return result;
+    }
+
+    bool ConnectSink() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (is_connected_ && queue_) return true;
+
+        auto devices = ScanAvailableSinkDevices();
+        if (devices.empty()) return false;
+
+        SinkDeviceInfo selected = devices[0];
+        for (const auto& d : devices) {
+            if (d.name.find("ACast") != std::string::npos) {
+                selected = d;
+                break;
+            } else if (d.name.find("OBS") != std::string::npos) {
+                selected = d;
+            }
+        }
+
+        active_device_ = selected;
+
+        CMSimpleQueueRef queue = NULL;
+        OSStatus err = CMIOStreamCopyBufferQueue(active_device_.sinkStreamId, DummyQueueAltered, NULL, &queue);
+        if (err != noErr || !queue) {
+            return false;
+        }
+
+        CMIODeviceStartStream(active_device_.deviceId, active_device_.sinkStreamId);
+
+        queue_ = queue;
+        is_connected_ = true;
+        frame_index_ = 0;
+
+        InitTargetPool(active_device_.targetWidth, active_device_.targetHeight);
+        return true;
+    }
+
+    void SendFrame(CVImageBufferRef imageBuffer) {
+        if (!imageBuffer) return;
+
+        if (!is_connected_) {
+            if (!ConnectSink()) return;
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!queue_) return;
+
+        size_t srcW = CVPixelBufferGetWidth(imageBuffer);
+        size_t srcH = CVPixelBufferGetHeight(imageBuffer);
+        CVPixelBufferRef bufferToSend = imageBuffer;
+        bool needReleaseToSend = false;
+
+        if ((int)srcW != active_device_.targetWidth || (int)srcH != active_device_.targetHeight) {
+            if (target_pool_ && transfer_session_) {
+                CVPixelBufferRef scaledBuffer = NULL;
+                CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, target_pool_, &scaledBuffer);
+                if (cvRet == kCVReturnSuccess && scaledBuffer) {
+                    VTPixelTransferSessionTransferImage(transfer_session_, imageBuffer, scaledBuffer);
+                    bufferToSend = scaledBuffer;
+                    needReleaseToSend = true;
+                }
+            }
+        }
+
+        CMVideoFormatDescriptionRef formatDesc = NULL;
+        OSStatus st = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, bufferToSend, &formatDesc);
+        if (st == noErr && formatDesc) {
+            CMSampleTimingInfo timing = {
+                .duration = CMTimeMake(1, 30),
+                .presentationTimeStamp = CMTimeMake(frame_index_++, 30),
+                .decodeTimeStamp = kCMTimeInvalid
+            };
+
+            CMSampleBufferRef sbuf = NULL;
+            st = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, bufferToSend, formatDesc, &timing, &sbuf);
+            if (st == noErr && sbuf) {
+                while (CMSimpleQueueGetCount(queue_) >= CMSimpleQueueGetCapacity(queue_)) {
+                    const void* oldBuf = CMSimpleQueueDequeue(queue_);
+                    if (oldBuf) CFRelease(oldBuf);
+                }
+                CMSimpleQueueEnqueue(queue_, sbuf);
+                CFRelease(sbuf);
+                sent_frames_++;
+            }
+            CFRelease(formatDesc);
+        }
+
+        if (needReleaseToSend && bufferToSend) {
+            CVPixelBufferRelease(bufferToSend);
+        }
+    }
+
+    bool HasActiveSink() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return is_connected_;
+    }
+
+    std::string GetActiveSinkName() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (is_connected_) return active_device_.name;
+        return "";
+    }
+
+    uint64_t GetSentFrames() const {
+        return sent_frames_.load();
+    }
+
+    void Disconnect() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (is_connected_) {
+            if (active_device_.deviceId && active_device_.sinkStreamId) {
+                CMIODeviceStopStream(active_device_.deviceId, active_device_.sinkStreamId);
+            }
+            if (queue_) {
+                CFRelease(queue_);
+                queue_ = NULL;
+            }
+            if (transfer_session_) {
+                VTPixelTransferSessionInvalidate(transfer_session_);
+                CFRelease(transfer_session_);
+                transfer_session_ = NULL;
+            }
+            if (target_pool_) {
+                CVPixelBufferPoolRelease(target_pool_);
+                target_pool_ = NULL;
+            }
+            is_connected_ = false;
+        }
+    }
+
+private:
+    static void DummyQueueAltered(CMIOStreamID streamID, void* token, void* refCon) {}
+
+    void InitTargetPool(int width, int height) {
+        if (target_pool_) {
+            CVPixelBufferPoolRelease(target_pool_);
+            target_pool_ = NULL;
+        }
+        if (transfer_session_) {
+            VTPixelTransferSessionInvalidate(transfer_session_);
+            CFRelease(transfer_session_);
+            transfer_session_ = NULL;
+        }
+
+        VTPixelTransferSessionCreate(kCFAllocatorDefault, &transfer_session_);
+
+        NSDictionary* pixelAttrs = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey: @(width),
+            (id)kCVPixelBufferHeightKey: @(height),
+            (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+            (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
+            (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
+        };
+        NSDictionary* poolAttrs = @{
+            (id)kCVPixelBufferPoolMinimumBufferCountKey: @15
+        };
+        CVPixelBufferPoolCreate(kCFAllocatorDefault, (__bridge CFDictionaryRef)poolAttrs, (__bridge CFDictionaryRef)pixelAttrs, &target_pool_);
+    }
+
+    std::mutex mutex_;
+    bool is_connected_ = false;
+    SinkDeviceInfo active_device_;
+    CMSimpleQueueRef queue_ = NULL;
+    VTPixelTransferSessionRef transfer_session_ = NULL;
+    CVPixelBufferPoolRef target_pool_ = NULL;
+    int64_t frame_index_ = 0;
+    std::atomic<uint64_t> sent_frames_{0};
+};
+
 static NSString* SafeStr(const std::string& str) {
     if (str.empty()) return @"";
     NSString* ns = [NSString stringWithUTF8String:str.c_str()];
@@ -203,8 +490,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         if (cgImage != NULL) {
             [view deliverDecodedImage:cgImage];
         }
-        // 实时分发给 macOS 虚拟摄像头系统扩展 (供 Zoom / FaceTime / 会议软件使用)
+        // 实时分发给 macOS 虚拟摄像头系统扩展与 CMIO 硬件直通 (供 Zoom / FaceTime / 会议软件使用)
         VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
+        CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
     } else if (status != noErr) {
         [view handleDecodeError:status];
     }
@@ -940,13 +1228,13 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
     [contentView addSubview:phoneBox];
 
-    // --- 3.5. 📷 Android 虚拟摄像头扩展中心 ---
+    // --- 3.5. 📷 Android 相机扩展中心 ---
     NSBox* cameraBox = [[NSBox alloc] initWithFrame:NSMakeRect(rightX, 395, rightW, 110)];
-    [cameraBox setTitle:@"📷 Android 虚拟摄像头 (可在 Zoom / FaceTime / 腾讯会议等直接选用)"];
+    [cameraBox setTitle:@"📷 Android 相机扩展中心 (可在 Zoom / FaceTime / 腾讯会议等选用)"];
     [cameraBox setTitleFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
 
     cameraStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 62, rightW - 30, 24)];
-    [cameraStatusLabel setStringValue:@"扩展状态: 已就绪 (可在 FaceTime / Zoom 摄像头列表中选用【ACast 虚拟摄像头】)"];
+    [cameraStatusLabel setStringValue:@"扩展状态: 正在检测系统相机扩展..."];
     [cameraStatusLabel setFont:[NSFont systemFontOfSize:11.5]];
     [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
     [cameraStatusLabel setBezeled:NO];
@@ -954,22 +1242,22 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [cameraStatusLabel setEditable:NO];
     [cameraBox addSubview:cameraStatusLabel];
 
-    NSButton* installExtBtn = [[NSButton alloc] initWithFrame:NSMakeRect(15, 18, 135, 32)];
-    [installExtBtn setTitle:@"安装摄像头扩展"];
+    NSButton* installExtBtn = [[NSButton alloc] initWithFrame:NSMakeRect(15, 18, 140, 32)];
+    [installExtBtn setTitle:@"相机扩展安装指引"];
     [installExtBtn setBezelStyle:NSBezelStyleRounded];
     [installExtBtn setTarget:self];
     [installExtBtn setAction:@selector(onInstallCameraExtensionClicked:)];
     [cameraBox addSubview:installExtBtn];
 
-    NSButton* openSettingsBtn = [[NSButton alloc] initWithFrame:NSMakeRect(155, 18, 150, 32)];
-    [openSettingsBtn setTitle:@"打开系统扩展设置..."];
+    NSButton* openSettingsBtn = [[NSButton alloc] initWithFrame:NSMakeRect(160, 18, 165, 32)];
+    [openSettingsBtn setTitle:@"打开“相机扩展”设置..."];
     [openSettingsBtn setBezelStyle:NSBezelStyleRounded];
     [openSettingsBtn setTarget:self];
     [openSettingsBtn setAction:@selector(onOpenExtensionSettingsClicked:)];
     [cameraBox addSubview:openSettingsBtn];
 
-    NSButton* reloadCamBtn = [[NSButton alloc] initWithFrame:NSMakeRect(310, 18, 135, 32)];
-    [reloadCamBtn setTitle:@"检测摄像头状态"];
+    NSButton* reloadCamBtn = [[NSButton alloc] initWithFrame:NSMakeRect(330, 18, 135, 32)];
+    [reloadCamBtn setTitle:@"检测相机扩展状态"];
     [reloadCamBtn setBezelStyle:NSBezelStyleRounded];
     [reloadCamBtn setTarget:self];
     [reloadCamBtn setAction:@selector(onReloadCameraClicked:)];
@@ -977,8 +1265,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
     [contentView addSubview:cameraBox];
 
-    // 启动本地虚拟摄像头中继服务 (提供给 Zoom/FaceTime 扩展)
+    // 启动本地虚拟摄像头中继服务与自动尝试探测相机扩展
     VirtualCameraRelay::GetInstance().StartServer(19996);
+    [self performSelector:@selector(onReloadCameraClicked:) withObject:nil afterDelay:0.2];
 
     // --- 4. 运行状态与事件日志视窗 ---
     NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 365, 200, 20)];
@@ -1346,17 +1635,38 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)onInstallCameraExtensionClicked:(id)sender {
-    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 正在请求激活 macOS CoreMediaIO 虚拟摄像头系统扩展...");
+    NSAlert* alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"macOS 相机扩展说明与使用指引"];
+    [alert setInformativeText:
+        @"【💡 推荐：免配置直通方案（已自动就绪）】\n"
+        @"ACast 内置 CoreMediaIO 虚拟相机直通技术，能够自动接管系统已激活的虚拟相机扩展（如 OBS Virtual Camera 等）。\n"
+        @"您只需在 Android 端点击【📷 启用 Android 摄像头】，然后在 Zoom、FaceTime、Photo Booth 或腾讯会议的摄像头列表中，选择【OBS Virtual Camera】，就能直接使用 Android 手机高清摄像头！无需任何额外系统授权或配置。\n\n"
+        @"【❓ 为什么在系统设置“相机扩展”中看不到 ACast？】\n"
+        @"macOS 系统完整性保护 (SIP) 规定：只有拥有苹果官方付费开发者证书 (Team ID) 的 App 才能将新的扩展直接写入“系统设置 > 通用 > 登录项与扩展 > 相机扩展”列表中。开源/个人构建版本会被系统安全拦截（错误码 2）。\n\n"
+        @"【🛠️ 若需要强制注册 ACast 独立扩展】\n"
+        @"您可以在终端中开启开发者扩展模式：\n"
+        @"  sudo systemextensionsctl developer on\n"
+        @"开启后点击“立即提交注册”即可。"];
+    [alert addButtonWithTitle:@"知道了 (使用直通模式)"];
+    [alert addButtonWithTitle:@"立即提交注册 ACast 扩展"];
+    [alert addButtonWithTitle:@"复制开发者命令"];
 
-    OSSystemExtensionRequest* req = [OSSystemExtensionRequest activationRequestForExtension:@"com.clevercat.acast.camera-extension" queue:dispatch_get_main_queue()];
-    req.delegate = self;
-    [[OSSystemExtensionManager sharedManager] submitRequest:req];
-
-    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 激活请求已提交。若系统提示【系统扩展已阻止】，请前往【系统设置 > 通用 > 登录项与扩展 > 摄像头扩展】勾选启用 ACast。");
+    NSModalResponse resp = [alert runModal];
+    if (resp == NSAlertSecondButtonReturn) {
+        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 正在向 macOS 提交注册 ACast 独立相机扩展请求...");
+        OSSystemExtensionRequest* req = [OSSystemExtensionRequest activationRequestForExtension:@"com.clevercat.acast.camera-extension" queue:dispatch_get_main_queue()];
+        req.delegate = self;
+        [[OSSystemExtensionManager sharedManager] submitRequest:req];
+    } else if (resp == NSAlertThirdButtonReturn) {
+        NSPasteboard* pb = [NSPasteboard generalPasteboard];
+        [pb clearContents];
+        [pb setString:@"sudo systemextensionsctl developer on" forType:NSPasteboardTypeString];
+        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 已复制开发者命令到剪贴板: sudo systemextensionsctl developer on");
+    }
 }
 
 - (void)onOpenExtensionSettingsClicked:(id)sender {
-    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 正在打开 macOS 登录项与扩展系统设置...");
+    acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 正在打开 macOS【系统设置 > 通用 > 登录项与扩展 > 相机扩展】...");
     NSURL* url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.LoginItems-Settings.extension"];
     if (![[NSWorkspace sharedWorkspace] openURL:url]) {
         [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security"]];
@@ -1364,15 +1674,36 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)onReloadCameraClicked:(id)sender {
+    acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 正在检测当前 Mac 系统的相机扩展 (Camera Extensions) 状态...");
+    auto devices = CMIOVirtualCameraBroadcaster::GetInstance().ScanAvailableSinkDevices();
     bool hasClients = VirtualCameraRelay::GetInstance().HasClients();
-    if (hasClients) {
-        [cameraStatusLabel setStringValue:@"扩展状态: 正在向 Zoom / FaceTime 推流中 (30 FPS)"];
+    uint64_t sentFrames = CMIOVirtualCameraBroadcaster::GetInstance().GetSentFrames();
+
+    if (!devices.empty()) {
+        std::string devNames;
+        for (size_t i = 0; i < devices.size(); ++i) {
+            if (i > 0) devNames += ", ";
+            devNames += devices[i].name;
+            NSString* logMsg = [NSString stringWithFormat:@"[相机扩展] 发现已就绪相机扩展 [%zu]: 名称='%@', UID='%@', 分辨率=%dx%d", 
+                i + 1, SafeStr(devices[i].name), SafeStr(devices[i].uid), devices[i].targetWidth, devices[i].targetHeight];
+            acast::desktop::DesktopController::GetInstance().Log(logMsg.UTF8String);
+        }
+
+        NSString* statusText = [NSString stringWithFormat:@"扩展状态: ✓ 已接入系统相机扩展 [%@] (可在 FaceTime / Zoom 直接选用)", SafeStr(devices[0].name)];
+        if (sentFrames > 0) {
+            statusText = [NSString stringWithFormat:@"扩展状态: 🟢 正在推流至 [%@] (已推送 %llu 帧)", SafeStr(devices[0].name), sentFrames];
+        }
+        [cameraStatusLabel setStringValue:statusText];
         [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
-        acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 状态检查: 虚拟摄像头正在向第三方客户端推流中。");
+        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查完毕: 系统虚拟相机直通链路正常，可在 Zoom / FaceTime / 腾讯会议等软件中直接选用。");
+    } else if (hasClients) {
+        [cameraStatusLabel setStringValue:@"扩展状态: 正在向独立客户端推流中 (30 FPS)"];
+        [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
+        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查: 检测到独立相机扩展客户端已连接。");
     } else {
-        [cameraStatusLabel setStringValue:@"扩展状态: 已就绪 (在 FaceTime / Zoom 打开摄像头即可直连手机)"];
-        [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
-        acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 状态检查: 虚拟摄像头扩展服务就绪，等待应用调起。");
+        [cameraStatusLabel setStringValue:@"扩展状态: 未检测到已激活的相机扩展 (请安装 OBS 虚拟相机或按指引配置独立扩展)"];
+        [cameraStatusLabel setTextColor:[NSColor systemOrangeColor]];
+        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查: 未检测到系统相机扩展。推荐安装 OBS Studio 或在终端开启 developer 模式。");
     }
 }
 
@@ -1382,18 +1713,18 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)requestNeedsUserApproval:(OSSystemExtensionRequest *)request {
-    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] ⚠️ 系统扩展需要用户批准：请在系统设置【登录项与扩展 > 摄像头扩展】中允许 ACast！");
+    acast::desktop::DesktopController::GetInstance().Log("[相机扩展] ⚠️ 系统扩展需要用户批准：请在系统设置【登录项与扩展 > 相机扩展】中允许 ACast！");
     [self onOpenExtensionSettingsClicked:nil];
 }
 
 - (void)request:(OSSystemExtensionRequest *)request didFinishWithResult:(OSSystemExtensionRequestResult)result {
-    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 🎉 恭喜！ACast 虚拟摄像头扩展已成功激活！可在 Zoom / FaceTime / 腾讯会议等软件中直接选用。");
+    acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 🎉 恭喜！ACast 独立相机扩展已成功激活！可在 Zoom / FaceTime / 腾讯会议等软件中直接选用。");
     [cameraStatusLabel setStringValue:@"扩展状态: ✓ 已成功激活并在系统中就绪！"];
     [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
 }
 
 - (void)request:(OSSystemExtensionRequest *)request didFailWithError:(NSError *)error {
-    NSString* errStr = [NSString stringWithFormat:@"[摄像头扩展] 激活扩展结果: %@ (提示: 本地开发测试可执行 scripts/install_camera_extension.sh)", error.localizedDescription];
+    NSString* errStr = [NSString stringWithFormat:@"[相机扩展] 注册结果: %@ (提示: 本地开发测试可执行 scripts/install_camera_extension.sh)", error.localizedDescription];
     acast::desktop::DesktopController::GetInstance().Log(errStr.UTF8String);
 }
 

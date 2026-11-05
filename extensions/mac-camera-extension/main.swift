@@ -14,3 +14,4 @@ CMIOExtensionProvider.startService(provider: provider)
 NSLog("ACastCameraExtension: Service started successfully. Ready for Zoom, FaceTime, etc.")
 
 CFRunLoopRun()
+

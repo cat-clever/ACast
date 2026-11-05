@@ -68,6 +68,7 @@ if(APPLE)
         "-framework VideoToolbox"
         "-framework CoreVideo"
         "-framework CoreMedia"
+        "-framework CoreMediaIO"
         "-framework AVFoundation"
         "-framework SystemExtensions"
     )
