@@ -69,6 +69,9 @@ public class FastMirrorSender {
                     clientSockets.add(client);
                     Log.i(TAG, "新控制器客户端已连接: " + client.getRemoteSocketAddress());
 
+                    // 新客户端连入，立即请求关键帧 (I-Frame/IDR)，确保首帧即时秒开呈现
+                    ScreenCaptureService.requestKeyFrame();
+
                     // 启动监听反向控制指令接收线程
                     new Thread(() -> handleIncomingControl(client), "FastMirrorClientHandler").start();
                 }

@@ -44,6 +44,7 @@ public class ScreenCaptureService extends Service {
     private boolean isEncoding = false;
     private Thread encoderThread;
     private PowerManager.WakeLock wakeLock;
+    private PowerManager.WakeLock screenWakeLock;
 
     private static ScreenCaptureService sInstance;
 
@@ -87,6 +88,14 @@ public class ScreenCaptureService extends Service {
             if (pm != null) {
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "acast:screencapture_wakelock");
                 wakeLock.acquire();
+
+                // 强制激活屏幕常亮锁，防止 1 分钟系统超时息屏导致 VirtualDisplay 停止推流
+                screenWakeLock = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP | PowerManager.ON_AFTER_RELEASE,
+                        "acast:screencapture_screenon"
+                );
+                screenWakeLock.acquire();
+                Log.i(TAG, "✓ 投屏屏幕常亮唤醒锁已激活");
             }
         } catch (Throwable t) {
             Log.w(TAG, "获取 WakeLock 异常: " + t.getMessage());
@@ -333,7 +342,13 @@ public class ScreenCaptureService extends Service {
         // 解除屏幕常亮保护
         ControlAccessibilityService.setKeepScreenOn(false);
 
-        // 释放 CPU WakeLock
+        // 释放屏幕常亮 WakeLock 与 CPU WakeLock
+        if (screenWakeLock != null && screenWakeLock.isHeld()) {
+            try {
+                screenWakeLock.release();
+            } catch (Throwable ignored) {}
+            screenWakeLock = null;
+        }
         if (wakeLock != null && wakeLock.isHeld()) {
             try {
                 wakeLock.release();

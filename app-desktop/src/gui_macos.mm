@@ -38,6 +38,7 @@ static NSString* SafeStr(const std::string& str) {
     std::vector<uint8_t> spsData;
     std::vector<uint8_t> ppsData;
     NSRect lastAspectFitRect;
+    std::chrono::steady_clock::time_point lastDragSendTime;
 }
 
 - (void)feedVideoPacket:(const uint8_t*)data size:(size_t)size isKey:(bool)isKey pts:(int64_t)pts;
@@ -77,6 +78,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         decompressionSession = NULL;
         formatDescription = NULL;
         lastAspectFitRect = NSZeroRect;
+        lastDragSendTime = std::chrono::steady_clock::now();
     }
     return self;
 }
@@ -359,15 +361,23 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
 - (void)mouseDown:(NSEvent *)event {
     [[self window] makeFirstResponder:self];
-    [self sendNormalizedTouchWithEvent:event action:0]; // 0: DOWN
+    lastDragSendTime = std::chrono::steady_clock::now();
+    [self sendNormalizedTouchWithEvent:event action:0]; // 0: DOWN (100% 立即发送)
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    // 鼠标拖拽高频限流防背压：限制最低发送间隔为 16ms (约 60Hz)，杜绝高刷鼠标将 UI 主线程和 Socket 缓冲区阻塞拥死
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDragSendTime).count();
+    if (elapsed < 16) {
+        return;
+    }
+    lastDragSendTime = now;
     [self sendNormalizedTouchWithEvent:event action:1]; // 1: MOVE
 }
 
 - (void)mouseUp:(NSEvent *)event {
-    [self sendNormalizedTouchWithEvent:event action:2]; // 2: UP
+    [self sendNormalizedTouchWithEvent:event action:2]; // 2: UP (100% 立即发送)
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -441,7 +451,6 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     NSButton* popScreenBtn;
     NSView* detachedPlaceholderView;
     NSWindow* standalonePhoneWindow;
-    ScreenMirrorView* standaloneScreenView;
     NSTextView* logTextView;
     NSTextField* updateBannerLabel;
     NSButton* updateButton;
@@ -742,16 +751,11 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         });
     });
 
-    // 绑定实时视频流硬解回调 (独立控制视窗与主视窗互斥智能分发)
+    // 绑定实时视频流硬解回调 (由唯一的 screenView 处理解码与渲染，跨窗口无缝迁移不中断)
     ctl.SetVideoCallback([weakSelf](const uint8_t* data, size_t size, bool is_key, int64_t pts) {
         AppDelegate* strongSelf = weakSelf;
-        if (!strongSelf) return;
-        bool hasStandalone = (strongSelf->standalonePhoneWindow && [strongSelf->standalonePhoneWindow isVisible] && strongSelf->standaloneScreenView);
-        if (hasStandalone) {
-            [strongSelf->standaloneScreenView feedVideoPacket:data size:size isKey:is_key pts:pts];
-        } else if (strongSelf->screenView && ![strongSelf->screenView isHidden]) {
-            [strongSelf->screenView feedVideoPacket:data size:size isKey:is_key pts:pts];
-        }
+        if (!strongSelf || !strongSelf->screenView) return;
+        [strongSelf->screenView feedVideoPacket:data size:size isKey:is_key pts:pts];
     });
 
     ctl.SetFastMirrorCallback([weakSelf](bool connected, std::string address) {
@@ -763,7 +767,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
                 [strongSelf->phoneStatusLabel setTextColor:[NSColor systemGreenColor]];
                 [strongSelf->connectPhoneBtn setTitle:@"断开连接"];
 
-                // 局域网直连成功后，自动弹出独立的手机控制视窗，并关闭主窗口的屏幕控制
+                // 局域网直连成功后，自动弹出独立的手机控制视窗，并将屏幕控制无缝移入独立视窗
                 [strongSelf showStandalonePhoneWindow];
                 [strongSelf detachMainScreenControl];
                 if (strongSelf->standalonePhoneWindow && !address.empty()) {
@@ -775,9 +779,6 @@ static void DecompressCallback(void* decompressionOutputRefCon,
                 [strongSelf->connectPhoneBtn setTitle:@"连接手机"];
                 [strongSelf restoreMainScreenControl];
                 [strongSelf->screenView clearFrame];
-                if (strongSelf->standaloneScreenView) {
-                    [strongSelf->standaloneScreenView clearFrame];
-                }
             }
         });
     });
@@ -943,17 +944,37 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)detachMainScreenControl {
-    [screenView setHidden:YES];
     [screenNavBar setHidden:YES];
     [detachedPlaceholderView setHidden:NO];
     [popScreenBtn setTitle:@"⤓ 收回控制屏幕至主窗口"];
+
+    // 关键架构优化：同一个 screenView 实例直接无缝移入独立视窗，硬解管道零中断、零丢帧、永不卡死
+    if (standalonePhoneWindow && screenView) {
+        NSView* container = [standalonePhoneWindow contentView];
+        [screenView removeFromSuperview];
+        NSRect cBounds = [container bounds];
+        [screenView setFrame:NSMakeRect(0, 48, cBounds.size.width, std::max((CGFloat)100.0, cBounds.size.height - 48))];
+        [screenView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [screenView setHidden:NO];
+        [container addSubview:screenView];
+        [screenView setNeedsDisplay:YES];
+    }
 }
 
 - (void)restoreMainScreenControl {
     if (standalonePhoneWindow && [standalonePhoneWindow isVisible]) {
         [standalonePhoneWindow orderOut:nil];
     }
-    [screenView setHidden:NO];
+    // 关键架构优化：将 screenView 移回主窗口，硬解管线保持连贯运行
+    if (screenView) {
+        NSView* contentView = [window contentView];
+        [screenView removeFromSuperview];
+        [screenView setFrame:NSMakeRect(20, 62, 420, 615)];
+        [screenView setAutoresizingMask:NSViewHeightSizable];
+        [screenView setHidden:NO];
+        [contentView addSubview:screenView];
+        [screenView setNeedsDisplay:YES];
+    }
     [screenNavBar setHidden:NO];
     [detachedPlaceholderView setHidden:YES];
     [popScreenBtn setTitle:@"⤢ 弹出独立控制屏幕窗口"];
@@ -1012,11 +1033,6 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         [navBar addSubview:btnRecents];
 
         [container addSubview:navBar];
-
-        // 上部主体手机投屏画面视窗
-        standaloneScreenView = [[ScreenMirrorView alloc] initWithFrame:NSMakeRect(0, 48, 420, 732)];
-        [standaloneScreenView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        [container addSubview:standaloneScreenView];
     }
 
     [standalonePhoneWindow makeKeyAndOrderFront:nil];

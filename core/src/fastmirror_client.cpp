@@ -170,7 +170,11 @@ bool FastMirrorClient::SendRawPacket(MessageType type, const uint8_t* payload, u
                 }
 #endif
             }
-            Disconnect();
+            // 绝不在调用线程（如 UI 主线程）同步调用 Disconnect()，避免 join() 引起主线程死锁假死！
+            is_connected_ = false;
+            if (socket_fd_ >= 0) {
+                SHUTDOWN_SOCKET(socket_fd_);
+            }
             return false;
         }
         total_sent += sent;

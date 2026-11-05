@@ -2,7 +2,11 @@
 
 ## v0.3.8 更新日志 (最新)
 
-1. **彻底解决投屏 1 分钟左右画面卡死定格 Bug (Zero-Lag Frame Coalescing & Decoder Self-Healing)**：
+1. **彻底解决弹出独立控制屏幕窗口卡死定格与断流 Bug (Single View Reparenting & Anti-Backpressure)**：
+   * **单一统一视图无缝迁移架构 (Single ScreenView Reparenting)**：重构主窗口与独立窗口的视图拓扑，废除双 `ScreenMirrorView` 实例设计。统一使用唯一的 `screenView` 实例在主窗口与独立视窗间动态挂载迁移，硬件解码器 `VTDecompressionSession` 与 SPS/PPS 配置上下文全生命周期保留，跨窗口切换无需重建解码器，杜绝丢帧、黑屏与切换卡死；视频回调直接喂给单一视图，绝不在后台子线程中跨线程读取 `[window isVisible]`，从根源杜绝跨线程死锁与误判断流；
+   * **高刷鼠标触控背压限流 (Touch Rate Limiting)**：针对鼠标连续拖拽滑动 `mouseDragged` 进行 16ms（60Hz）背压限流，防止外接高刷鼠标每秒向 UI 主线程疯狂发起阻塞式 Socket `send()`；`mouseDown` 和 `mouseUp` 保证 100% 立即发送；
+   * **网络发送失败杜绝主线程同步 join 死锁**：在 `SendRawPacket` 中移除了在 UI 线程同步调用 `Disconnect()`（调用 `join` 等待子线程）的死锁代码，改为异步安全退出，杜绝 macOS 彩球假死；
+   * **Android 手机端屏幕常亮锁强化 (Screen Bright WakeLock)**：`ScreenCaptureService` 新增 `PowerManager.SCREEN_BRIGHT_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP`，保证投屏期间手机屏幕 100% 不熄屏休眠，杜绝系统 1 分钟息屏超时导致 VirtualDisplay 停止推流；且新客户端连接时立即触发 `requestKeyFrame()` 生成首帧 IDR 关键帧；
    * **零积压最新帧调度器 (Zero-Lag Latest Frame Coalescing)**：重构 macOS VideoToolbox 帧渲染管道，主线程渲染消费与解码回调完全解耦。当系统负载或帧率波动导致主线程繁忙时，自动保留最新一帧并立即释放未及渲染的旧帧，从源头杜绝每秒 60 帧产生数十 GB 的 `VTCreateCGImageFromCVPixelBuffer` 内存积压，彻底消除 macOS `com.apple.coremedia.videodecoder` 进程被 watchdog 判定泄露引发的 `XPC_ERROR_CONNECTION_INTERRUPTED` 强杀崩溃；
    * **解码器故障自动重置与自愈机制**：增加 `handleDecodeError:` 容灾回调。当 VideoToolbox 报告会话异常或损坏帧时，自动重置销毁旧会话，并在收到下一个关键帧（SPS/PPS）时全自动无感重建解码器，杜绝画面永久卡死；
    * **超低延迟实时时间戳修正**：按苹果官方低延迟推流标准，将 `CMSampleTimingInfo` 配置为 `kCMTimeInvalid`，彻底关闭解码队列内部的时间戳重排序缓冲，降低显示延迟至极限；
