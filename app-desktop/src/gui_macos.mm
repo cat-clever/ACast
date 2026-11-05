@@ -212,9 +212,11 @@ public:
                     kCMIOObjectPropertyScopeGlobal,
                     kCMIOObjectPropertyElementMain
                 };
-                UInt32 dir = 0;
+                UInt32 dir = 999;
                 UInt32 ds = sizeof(dir);
-                if (CMIOObjectGetPropertyData(st, &dirProp, 0, NULL, ds, &ds, &dir) == noErr && dir == 1) {
+                // 注意：在 CoreMediaIO 规范中，0 = Output (Host to Device，即写入到虚拟相机的 Sink Stream)
+                // 1 = Input (Device to Host，即应用读取的 Source Stream)
+                if (CMIOObjectGetPropertyData(st, &dirProp, 0, NULL, ds, &ds, &dir) == noErr && dir == 0) {
                     SinkDeviceInfo info;
                     info.deviceId = devId;
                     info.sinkStreamId = st;
@@ -273,6 +275,131 @@ public:
 
     bool ConnectSink() {
         std::lock_guard<std::mutex> lock(mutex_);
+        return ConnectSinkLocked();
+    }
+
+    void SendFrame(CVImageBufferRef imageBuffer) {
+        if (!imageBuffer) return;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!is_connected_) {
+            if (!ConnectSinkLocked()) return;
+        }
+
+        if (!queue_) return;
+
+        size_t srcW = CVPixelBufferGetWidth(imageBuffer);
+        size_t srcH = CVPixelBufferGetHeight(imageBuffer);
+        if (srcW == 0 || srcH == 0) return;
+
+        CVPixelBufferRef bufferToSend = imageBuffer;
+        bool needReleaseToSend = false;
+
+        int targetW = active_device_.targetWidth > 0 ? active_device_.targetWidth : (int)srcW;
+        int targetH = active_device_.targetHeight > 0 ? active_device_.targetHeight : (int)srcH;
+
+        if ((int)srcW != targetW || (int)srcH != targetH) {
+            if (target_pool_ && transfer_session_) {
+                CVPixelBufferRef scaledBuffer = NULL;
+                CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, target_pool_, &scaledBuffer);
+                if (cvRet == kCVReturnSuccess && scaledBuffer) {
+                    VTPixelTransferSessionTransferImage(transfer_session_, imageBuffer, scaledBuffer);
+                    bufferToSend = scaledBuffer;
+                    needReleaseToSend = true;
+                }
+            }
+        }
+
+        CMVideoFormatDescriptionRef formatDesc = NULL;
+        OSStatus st = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, bufferToSend, &formatDesc);
+        if (st == noErr && formatDesc) {
+            CMSampleTimingInfo timing = {
+                .duration = CMTimeMake(1, 30),
+                .presentationTimeStamp = CMTimeMake(frame_index_++, 30),
+                .decodeTimeStamp = kCMTimeInvalid
+            };
+
+            CMSampleBufferRef sbuf = NULL;
+            st = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, bufferToSend, formatDesc, &timing, &sbuf);
+            if (st == noErr && sbuf) {
+                // 当队列满时，将最旧的未消费帧丢弃，并调用 CFRelease 释放队列占用的引用
+                while (CMSimpleQueueGetCount(queue_) >= CMSimpleQueueGetCapacity(queue_)) {
+                    const void* oldBuf = CMSimpleQueueDequeue(queue_);
+                    if (oldBuf) {
+                        CFRelease((CFTypeRef)oldBuf);
+                    }
+                }
+                // 入队：sbuf 的 +1 引用转移给队列持有人（即消费者消费完后释放）
+                OSStatus qErr = CMSimpleQueueEnqueue(queue_, sbuf);
+                if (qErr == noErr) {
+                    sent_frames_++;
+                    // 严禁在此调用 CFRelease(sbuf)！队列不自动 retain，所有权已由队列消费端持有
+                } else {
+                    // 入队失败，队列未接管，必须由我们释放
+                    CFRelease(sbuf);
+                }
+            }
+            CFRelease(formatDesc);
+        }
+
+        if (needReleaseToSend && bufferToSend) {
+            CVPixelBufferRelease(bufferToSend);
+        }
+    }
+
+    bool HasActiveSink() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return is_connected_;
+    }
+
+    std::string GetActiveSinkName() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (is_connected_) return active_device_.name;
+        return "";
+    }
+
+    uint64_t GetSentFrames() const {
+        return sent_frames_.load();
+    }
+
+    void Disconnect() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (is_connected_) {
+            if (active_device_.deviceId && active_device_.sinkStreamId) {
+                CMIODeviceStopStream(active_device_.deviceId, active_device_.sinkStreamId);
+            }
+            if (queue_) {
+                // 清理队列中尚未被消费的残余帧
+                while (CMSimpleQueueGetCount(queue_) > 0) {
+                    const void* buf = CMSimpleQueueDequeue(queue_);
+                    if (buf) {
+                        CFRelease((CFTypeRef)buf);
+                    }
+                }
+                CFRelease(queue_);
+                queue_ = NULL;
+            }
+            if (transfer_session_) {
+                VTPixelTransferSessionInvalidate(transfer_session_);
+                CFRelease(transfer_session_);
+                transfer_session_ = NULL;
+            }
+            if (target_pool_) {
+                CVPixelBufferPoolRelease(target_pool_);
+                target_pool_ = NULL;
+            }
+            is_connected_ = false;
+        }
+    }
+
+    ~CMIOVirtualCameraBroadcaster() {
+        Disconnect();
+    }
+
+private:
+    static void DummyQueueAltered(CMIOStreamID streamID, void* token, void* refCon) {}
+
+    bool ConnectSinkLocked() {
         if (is_connected_ && queue_) return true;
 
         auto devices = ScanAvailableSinkDevices();
@@ -305,102 +432,6 @@ public:
         InitTargetPool(active_device_.targetWidth, active_device_.targetHeight);
         return true;
     }
-
-    void SendFrame(CVImageBufferRef imageBuffer) {
-        if (!imageBuffer) return;
-
-        if (!is_connected_) {
-            if (!ConnectSink()) return;
-        }
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!queue_) return;
-
-        size_t srcW = CVPixelBufferGetWidth(imageBuffer);
-        size_t srcH = CVPixelBufferGetHeight(imageBuffer);
-        CVPixelBufferRef bufferToSend = imageBuffer;
-        bool needReleaseToSend = false;
-
-        if ((int)srcW != active_device_.targetWidth || (int)srcH != active_device_.targetHeight) {
-            if (target_pool_ && transfer_session_) {
-                CVPixelBufferRef scaledBuffer = NULL;
-                CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, target_pool_, &scaledBuffer);
-                if (cvRet == kCVReturnSuccess && scaledBuffer) {
-                    VTPixelTransferSessionTransferImage(transfer_session_, imageBuffer, scaledBuffer);
-                    bufferToSend = scaledBuffer;
-                    needReleaseToSend = true;
-                }
-            }
-        }
-
-        CMVideoFormatDescriptionRef formatDesc = NULL;
-        OSStatus st = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, bufferToSend, &formatDesc);
-        if (st == noErr && formatDesc) {
-            CMSampleTimingInfo timing = {
-                .duration = CMTimeMake(1, 30),
-                .presentationTimeStamp = CMTimeMake(frame_index_++, 30),
-                .decodeTimeStamp = kCMTimeInvalid
-            };
-
-            CMSampleBufferRef sbuf = NULL;
-            st = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, bufferToSend, formatDesc, &timing, &sbuf);
-            if (st == noErr && sbuf) {
-                while (CMSimpleQueueGetCount(queue_) >= CMSimpleQueueGetCapacity(queue_)) {
-                    const void* oldBuf = CMSimpleQueueDequeue(queue_);
-                    if (oldBuf) CFRelease(oldBuf);
-                }
-                CMSimpleQueueEnqueue(queue_, sbuf);
-                CFRelease(sbuf);
-                sent_frames_++;
-            }
-            CFRelease(formatDesc);
-        }
-
-        if (needReleaseToSend && bufferToSend) {
-            CVPixelBufferRelease(bufferToSend);
-        }
-    }
-
-    bool HasActiveSink() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return is_connected_;
-    }
-
-    std::string GetActiveSinkName() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (is_connected_) return active_device_.name;
-        return "";
-    }
-
-    uint64_t GetSentFrames() const {
-        return sent_frames_.load();
-    }
-
-    void Disconnect() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (is_connected_) {
-            if (active_device_.deviceId && active_device_.sinkStreamId) {
-                CMIODeviceStopStream(active_device_.deviceId, active_device_.sinkStreamId);
-            }
-            if (queue_) {
-                CFRelease(queue_);
-                queue_ = NULL;
-            }
-            if (transfer_session_) {
-                VTPixelTransferSessionInvalidate(transfer_session_);
-                CFRelease(transfer_session_);
-                transfer_session_ = NULL;
-            }
-            if (target_pool_) {
-                CVPixelBufferPoolRelease(target_pool_);
-                target_pool_ = NULL;
-            }
-            is_connected_ = false;
-        }
-    }
-
-private:
-    static void DummyQueueAltered(CMIOStreamID streamID, void* token, void* refCon) {}
 
     void InitTargetPool(int width, int height) {
         if (target_pool_) {
@@ -682,10 +713,14 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         if (cgImage != NULL) {
             [view deliverDecodedImage:cgImage];
         }
-        // 若当前未激活独立摄像头流，则将屏幕流作为备用直通给虚拟相机；若摄像头激活，则由独立摄像头解码器供应
+        // 若当前未激活独立摄像头流，且虚拟相机已被用户接入使用时，才同步屏幕流作为备用源
         if (!CameraStreamDecoder::GetInstance().HasActiveCameraStream()) {
-            VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
-            CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
+            if (VirtualCameraRelay::GetInstance().HasClients()) {
+                VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
+            }
+            if (CMIOVirtualCameraBroadcaster::GetInstance().HasActiveSink()) {
+                CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
+            }
         }
     } else if (status != noErr) {
         [view handleDecodeError:status];
