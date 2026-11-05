@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(acast_desktop VERSION 0.4.1 LANGUAGES CXX)
+project(acast_desktop VERSION 0.4.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,8 +52,8 @@ if(APPLE)
         MACOSX_BUNDLE_ICON_FILE "acast.icns"
         MACOSX_BUNDLE_BUNDLE_NAME "ACast"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.catclever.acast"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.4.1"
-        MACOSX_BUNDLE_BUNDLE_VERSION "0.4.1"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.4.2"
+        MACOSX_BUNDLE_BUNDLE_VERSION "0.4.2"
     )
 
     set_source_files_properties(
@@ -69,5 +69,15 @@ if(APPLE)
         "-framework CoreVideo"
         "-framework CoreMedia"
         "-framework AVFoundation"
+        "-framework SystemExtensions"
+    )
+
+    add_custom_command(TARGET acast_desktop POST_BUILD
+        COMMAND ${CMAKE_SOURCE_DIR}/scripts/build_camera_extension.sh ${CMAKE_CURRENT_BINARY_DIR}/camera-extension
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:acast_desktop>/../Library/SystemExtensions
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_BINARY_DIR}/camera-extension/com.clevercat.acast.camera-extension.systemextension
+            $<TARGET_FILE_DIR:acast_desktop>/../Library/SystemExtensions/com.clevercat.acast.camera-extension.systemextension
+        COMMENT "打包嵌入 macOS 虚拟摄像头系统扩展 (Camera Extension)..."
     )
 endif()

@@ -83,6 +83,7 @@ public class FastMirrorSender {
 
                     // 立即请求编码器刷新关键帧 (I-Frame/IDR)
                     ScreenCaptureService.requestKeyFrame();
+                    CameraStreamingHelper.requestKeyFrame();
 
                     // 启动监听反向控制指令接收线程
                     new Thread(() -> handleIncomingControl(client), "FastMirrorClientHandler").start();

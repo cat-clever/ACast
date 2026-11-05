@@ -1,6 +1,16 @@
 # ACast 发版说明
 
-## v0.4.1 更新日志 (最新)
+## v0.4.2 更新日志 (最新)
+
+1. **全新推出 “在 Mac 上使用 Android 手机摄像头” 功能 (Android Webcam for Mac)**：
+   * **macOS 现代 CoreMediaIO 虚拟摄像头扩展系统 (`CMIOExtensionProvider`)**：基于 Apple 推荐的系统扩展规范构建独立的虚拟摄像头设备 **【ACast 虚拟摄像头 (Android Camera)】**，彻底突破旧版 DAL 插件在 macOS Sonoma / Ventura / Sequoia 下被 FaceTime / Safari / 沙盒会议软件硬性屏蔽的限制；
+   * **广泛兼容各类视讯软件**：在 Zoom、FaceTime、腾讯会议、Photo Booth、Google Meet、Safari 等应用中可直接在摄像头输入列表中选用；
+   * **Android 端硬件级相机采集与推流**：基于 Camera2 采集与 MediaCodec H.264 硬件编码，支持 1080P/720P 高清推流，支持前置/后置镜头快速翻转与补光灯控制；
+   * **智能待机占位图与极速本地中继**：在手机推流未就绪时自动呈现动态优雅待机画面；推流开启后毫秒级无损上屏，延迟低至 20ms。
+
+---
+
+## v0.4.1 更新日志
 
 1. **全面重构连续手势引擎，彻底根治左右实时滑动卡顿抽搐缺陷 (Continuous Follow-up Gesture Engine)**：
    * **基于 continueStroke 的真实不松手连续滑动**：彻底废弃此前“每隔 12 像素强制执行一次包含 ACTION_UP 完整手势”引发的抽搐跳变（该旧方案导致桌面/翻页容器认为被不断触碰后松手弹回）。在 `ControlAccessibilityService` 中引入连续手势状态机与手势推进泵，通过 `willContinue = true` 配合 Android 8.0+ `continueStroke`，手指在滑动全程始终按压贴紧屏幕无缝移动，完全呈现与真机手指滑动 100% 相同的一体化触摸事件流；

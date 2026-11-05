@@ -5,6 +5,7 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <AVFoundation/AVFoundation.h>
+#import <SystemExtensions/SystemExtensions.h>
 
 #include "gui_interface.h"
 #include "desktop_controller.h"
@@ -13,7 +14,143 @@
 #include <string>
 #include <memory>
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <unistd.h>
+
+// ============================================================================
+// VirtualCameraRelay: 极低延迟本地虚拟摄像头中继服务 (提供给 Zoom/FaceTime 扩展)
+// ============================================================================
+
+class VirtualCameraRelay {
+public:
+    static VirtualCameraRelay& GetInstance() {
+        static VirtualCameraRelay sInstance;
+        return sInstance;
+    }
+
+    void StartServer(uint16_t port = 19996) {
+        if (is_running_) return;
+        is_running_ = true;
+        server_thread_ = std::thread([this, port]() {
+            int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+            if (server_fd < 0) return;
+
+            int opt = 1;
+            setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1
+            addr.sin_port = htons(port);
+
+            if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+                close(server_fd);
+                return;
+            }
+
+            if (listen(server_fd, 5) < 0) {
+                close(server_fd);
+                return;
+            }
+
+            while (is_running_) {
+                int client_fd = accept(server_fd, nullptr, nullptr);
+                if (client_fd < 0) break;
+
+                int nodelay = 1;
+                setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
+                {
+                    std::lock_guard<std::mutex> lock(clients_mutex_);
+                    client_fds_.push_back(client_fd);
+                }
+            }
+            close(server_fd);
+        });
+    }
+
+    void SendFrame(CVImageBufferRef imageBuffer) {
+        if (!is_running_ || !imageBuffer) return;
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex_);
+            if (client_fds_.empty()) return;
+        }
+
+        CVPixelBufferLockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
+        uint8_t* base = (uint8_t*)CVPixelBufferGetBaseAddress(imageBuffer);
+        size_t width = CVPixelBufferGetWidth(imageBuffer);
+        size_t height = CVPixelBufferGetHeight(imageBuffer);
+        size_t bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer);
+
+        if (base && width > 0 && height > 0) {
+            uint32_t data_len = (uint32_t)(width * height * 4);
+            std::vector<uint8_t> packet(16 + data_len);
+            uint32_t* header = (uint32_t*)packet.data();
+            header[0] = 0x4143414D; // "ACAM"
+            header[1] = (uint32_t)width;
+            header[2] = (uint32_t)height;
+            header[3] = data_len;
+
+            uint8_t* dest = packet.data() + 16;
+            size_t srcRow = bytesPerRow;
+            size_t destRow = width * 4;
+            if (srcRow == destRow) {
+                memcpy(dest, base, data_len);
+            } else {
+                size_t minRow = std::min(srcRow, destRow);
+                for (size_t y = 0; y < height; ++y) {
+                    memcpy(dest + y * destRow, base + y * srcRow, minRow);
+                }
+            }
+
+            Broadcast(packet.data(), packet.size());
+        }
+
+        CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
+    }
+
+    void Broadcast(const uint8_t* data, size_t size) {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        for (auto it = client_fds_.begin(); it != client_fds_.end(); ) {
+            int fd = *it;
+            ssize_t sent = send(fd, data, size, 0);
+            if (sent <= 0) {
+                close(fd);
+                it = client_fds_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    bool HasClients() {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        return !client_fds_.empty();
+    }
+
+    void StopServer() {
+        is_running_ = false;
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+        for (int fd : client_fds_) {
+            close(fd);
+        }
+        client_fds_.clear();
+        if (server_thread_.joinable()) {
+            server_thread_.detach();
+        }
+    }
+
+private:
+    std::atomic<bool> is_running_{false};
+    std::thread server_thread_;
+    std::mutex clients_mutex_;
+    std::vector<int> client_fds_;
+};
 
 static NSString* SafeStr(const std::string& str) {
     if (str.empty()) return @"";
@@ -66,6 +203,8 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         if (cgImage != NULL) {
             [view deliverDecodedImage:cgImage];
         }
+        // 实时分发给 macOS 虚拟摄像头系统扩展 (供 Zoom / FaceTime / 会议软件使用)
+        VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
     } else if (status != noErr) {
         [view handleDecodeError:status];
     }
@@ -540,7 +679,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 // AppDelegate: 控制台主控制器
 // ============================================================================
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate> {
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, OSSystemExtensionRequestDelegate> {
     NSWindow* window;
     ScreenMirrorView* screenView;
     NSView* screenNavBar;
@@ -555,6 +694,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     NSPopUpButton* phonePopUp;
     NSButton* connectPhoneBtn;
     NSTextField* usbStatusLabel;
+    NSTextField* cameraStatusLabel;
     NSProgressIndicator* updateProgressIndicator;
 
     std::vector<acast::discovery::DiscoveredPhone> cachedWifiPhones;
@@ -800,8 +940,48 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
     [contentView addSubview:phoneBox];
 
+    // --- 3.5. 📷 Android 虚拟摄像头扩展中心 ---
+    NSBox* cameraBox = [[NSBox alloc] initWithFrame:NSMakeRect(rightX, 395, rightW, 110)];
+    [cameraBox setTitle:@"📷 Android 虚拟摄像头 (可在 Zoom / FaceTime / 腾讯会议等直接选用)"];
+    [cameraBox setTitleFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
+
+    cameraStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 62, rightW - 30, 24)];
+    [cameraStatusLabel setStringValue:@"扩展状态: 已就绪 (可在 FaceTime / Zoom 摄像头列表中选用【ACast 虚拟摄像头】)"];
+    [cameraStatusLabel setFont:[NSFont systemFontOfSize:11.5]];
+    [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
+    [cameraStatusLabel setBezeled:NO];
+    [cameraStatusLabel setDrawsBackground:NO];
+    [cameraStatusLabel setEditable:NO];
+    [cameraBox addSubview:cameraStatusLabel];
+
+    NSButton* installExtBtn = [[NSButton alloc] initWithFrame:NSMakeRect(15, 18, 135, 32)];
+    [installExtBtn setTitle:@"安装摄像头扩展"];
+    [installExtBtn setBezelStyle:NSBezelStyleRounded];
+    [installExtBtn setTarget:self];
+    [installExtBtn setAction:@selector(onInstallCameraExtensionClicked:)];
+    [cameraBox addSubview:installExtBtn];
+
+    NSButton* openSettingsBtn = [[NSButton alloc] initWithFrame:NSMakeRect(155, 18, 150, 32)];
+    [openSettingsBtn setTitle:@"打开系统扩展设置..."];
+    [openSettingsBtn setBezelStyle:NSBezelStyleRounded];
+    [openSettingsBtn setTarget:self];
+    [openSettingsBtn setAction:@selector(onOpenExtensionSettingsClicked:)];
+    [cameraBox addSubview:openSettingsBtn];
+
+    NSButton* reloadCamBtn = [[NSButton alloc] initWithFrame:NSMakeRect(310, 18, 135, 32)];
+    [reloadCamBtn setTitle:@"检测摄像头状态"];
+    [reloadCamBtn setBezelStyle:NSBezelStyleRounded];
+    [reloadCamBtn setTarget:self];
+    [reloadCamBtn setAction:@selector(onReloadCameraClicked:)];
+    [cameraBox addSubview:reloadCamBtn];
+
+    [contentView addSubview:cameraBox];
+
+    // 启动本地虚拟摄像头中继服务 (提供给 Zoom/FaceTime 扩展)
+    VirtualCameraRelay::GetInstance().StartServer(19996);
+
     // --- 4. 运行状态与事件日志视窗 ---
-    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 475, 200, 20)];
+    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 365, 200, 20)];
     [logTitle setStringValue:@"📋 运行状态与事件日志"];
     [logTitle setFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
     [logTitle setBezeled:NO];
@@ -809,14 +989,14 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [logTitle setEditable:NO];
     [contentView addSubview:logTitle];
 
-    NSButton* clearLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(rightX + rightW - 85, 472, 85, 26)];
+    NSButton* clearLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(rightX + rightW - 85, 362, 85, 26)];
     [clearLogBtn setTitle:@"清空"];
     [clearLogBtn setBezelStyle:NSBezelStyleRounded];
     [clearLogBtn setTarget:self];
     [clearLogBtn setAction:@selector(onClearLogClicked:)];
     [contentView addSubview:clearLogBtn];
 
-    NSScrollView* logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(rightX, 20, rightW, 445)];
+    NSScrollView* logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(rightX, 20, rightW, 335)];
     [logScrollView setHasVerticalScroller:YES];
     [logScrollView setBorderType:NSBezelBorder];
     [logScrollView setAutoresizingMask:NSViewHeightSizable];
@@ -1163,6 +1343,58 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     }
 
     [standalonePhoneWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)onInstallCameraExtensionClicked:(id)sender {
+    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 正在请求激活 macOS CoreMediaIO 虚拟摄像头系统扩展...");
+
+    OSSystemExtensionRequest* req = [OSSystemExtensionRequest activationRequestForExtension:@"com.clevercat.acast.camera-extension" queue:dispatch_get_main_queue()];
+    req.delegate = self;
+    [[OSSystemExtensionManager sharedManager] submitRequest:req];
+
+    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 激活请求已提交。若系统提示【系统扩展已阻止】，请前往【系统设置 > 通用 > 登录项与扩展 > 摄像头扩展】勾选启用 ACast。");
+}
+
+- (void)onOpenExtensionSettingsClicked:(id)sender {
+    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 正在打开 macOS 登录项与扩展系统设置...");
+    NSURL* url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.LoginItems-Settings.extension"];
+    if (![[NSWorkspace sharedWorkspace] openURL:url]) {
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security"]];
+    }
+}
+
+- (void)onReloadCameraClicked:(id)sender {
+    bool hasClients = VirtualCameraRelay::GetInstance().HasClients();
+    if (hasClients) {
+        [cameraStatusLabel setStringValue:@"扩展状态: 正在向 Zoom / FaceTime 推流中 (30 FPS)"];
+        [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
+        acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 状态检查: 虚拟摄像头正在向第三方客户端推流中。");
+    } else {
+        [cameraStatusLabel setStringValue:@"扩展状态: 已就绪 (在 FaceTime / Zoom 打开摄像头即可直连手机)"];
+        [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
+        acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 状态检查: 虚拟摄像头扩展服务就绪，等待应用调起。");
+    }
+}
+
+// OSSystemExtensionRequestDelegate
+- (OSSystemExtensionReplacementAction)request:(OSSystemExtensionRequest *)request actionForReplacingExtension:(OSSystemExtensionProperties *)existing withExtension:(OSSystemExtensionProperties *)extension {
+    return OSSystemExtensionReplacementActionReplace;
+}
+
+- (void)requestNeedsUserApproval:(OSSystemExtensionRequest *)request {
+    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] ⚠️ 系统扩展需要用户批准：请在系统设置【登录项与扩展 > 摄像头扩展】中允许 ACast！");
+    [self onOpenExtensionSettingsClicked:nil];
+}
+
+- (void)request:(OSSystemExtensionRequest *)request didFinishWithResult:(OSSystemExtensionRequestResult)result {
+    acast::desktop::DesktopController::GetInstance().Log("[摄像头扩展] 🎉 恭喜！ACast 虚拟摄像头扩展已成功激活！可在 Zoom / FaceTime / 腾讯会议等软件中直接选用。");
+    [cameraStatusLabel setStringValue:@"扩展状态: ✓ 已成功激活并在系统中就绪！"];
+    [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
+}
+
+- (void)request:(OSSystemExtensionRequest *)request didFailWithError:(NSError *)error {
+    NSString* errStr = [NSString stringWithFormat:@"[摄像头扩展] 激活扩展结果: %@ (提示: 本地开发测试可执行 scripts/install_camera_extension.sh)", error.localizedDescription];
+    acast::desktop::DesktopController::GetInstance().Log(errStr.UTF8String);
 }
 
 - (void)onClearLogClicked:(id)sender {

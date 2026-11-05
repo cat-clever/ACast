@@ -36,8 +36,15 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
     private static final int REQUEST_MEDIA_PROJECTION = 1001;
     private static final int REQUEST_PERMISSIONS_CODE = 2002;
+    private static final int REQUEST_CAMERA_PERMISSION = 2003;
 
     private Button btnToggleCapture;
+    private Button btnToggleCamera;
+    private android.widget.LinearLayout layoutCameraControls;
+    private Button btnSwitchCamera;
+    private Button btnToggleTorch;
+    private Button btnCameraRes;
+    private android.view.TextureView cameraPreviewView;
     private Button btnAccessibility;
     private Button btnScanDevices;
     private Button btnCheckUpdate;
@@ -46,6 +53,7 @@ public class MainActivity extends AppCompatActivity {
     private ListView lvDevices;
 
     private boolean isCapturing = false;
+    private int currentCameraRes = 1080;
     private String pendingTargetDevice = null;
     private ArrayAdapter<String> deviceAdapter;
     private final ArrayList<String> deviceList = new ArrayList<>();
@@ -71,6 +79,12 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         btnToggleCapture = findViewById(R.id.btn_toggle_capture);
+        btnToggleCamera = findViewById(R.id.btn_toggle_camera);
+        layoutCameraControls = findViewById(R.id.layout_camera_controls);
+        btnSwitchCamera = findViewById(R.id.btn_switch_camera);
+        btnToggleTorch = findViewById(R.id.btn_toggle_torch);
+        btnCameraRes = findViewById(R.id.btn_camera_res);
+        cameraPreviewView = findViewById(R.id.camera_preview_view);
         btnAccessibility = findViewById(R.id.btn_accessibility);
         btnScanDevices = findViewById(R.id.btn_scan_tv);
         btnCheckUpdate = findViewById(R.id.btn_check_update);
@@ -119,9 +133,43 @@ public class MainActivity extends AppCompatActivity {
 
         btnToggleCapture.setOnClickListener(v -> {
             if (!isCapturing) {
+                if (CameraStreamingHelper.getInstance().isStreaming()) {
+                    CameraStreamingHelper.getInstance().stopCamera();
+                }
                 requestRequiredPermissionsAndStartCapture();
             } else {
                 stopScreenCapture();
+            }
+        });
+
+        btnToggleCamera.setOnClickListener(v -> {
+            if (CameraStreamingHelper.getInstance().isStreaming()) {
+                stopCameraStream();
+            } else {
+                if (isCapturing) {
+                    stopScreenCapture();
+                }
+                checkCameraPermissionAndStart();
+            }
+        });
+
+        btnSwitchCamera.setOnClickListener(v -> {
+            CameraStreamingHelper.getInstance().switchCamera();
+            Toast.makeText(this, "正在切换" + (CameraStreamingHelper.getInstance().isFrontCamera() ? "前置" : "后置") + "摄像头...", Toast.LENGTH_SHORT).show();
+        });
+
+        btnToggleTorch.setOnClickListener(v -> {
+            CameraStreamingHelper.getInstance().toggleTorch();
+            btnToggleTorch.setText(CameraStreamingHelper.getInstance().isTorchOn() ? "💡 灯开" : "💡 灯关");
+        });
+
+        btnCameraRes.setOnClickListener(v -> {
+            currentCameraRes = (currentCameraRes == 1080) ? 720 : 1080;
+            btnCameraRes.setText("⚙️ " + currentCameraRes + "P");
+            if (CameraStreamingHelper.getInstance().isStreaming()) {
+                Toast.makeText(this, "分辨率切换为 " + currentCameraRes + "P，正在重置摄像头流...", Toast.LENGTH_SHORT).show();
+                stopCameraStream();
+                startCameraStream();
             }
         });
 
@@ -274,7 +322,75 @@ public class MainActivity extends AppCompatActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSIONS_CODE) {
             launchMediaProjectionPrompt();
+        } else if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startCameraStream();
+            } else {
+                Toast.makeText(this, "需开启相机权限才能使用摄像头模式", Toast.LENGTH_SHORT).show();
+            }
         }
+    }
+
+    private void checkCameraPermissionAndStart() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
+        } else {
+            startCameraStream();
+        }
+    }
+
+    private void startCameraStream() {
+        int width = (currentCameraRes == 1080) ? 1920 : 1280;
+        int height = (currentCameraRes == 1080) ? 1080 : 720;
+
+        android.view.Surface previewSurface = null;
+        if (cameraPreviewView != null && cameraPreviewView.isAvailable()) {
+            previewSurface = new android.view.Surface(cameraPreviewView.getSurfaceTexture());
+        }
+
+        CameraStreamingHelper.getInstance().startCamera(
+                this,
+                previewSurface,
+                width,
+                height,
+                false, // 默认后置高清摄像头
+                new CameraStreamingHelper.CameraListener() {
+                    @Override
+                    public void onCameraStarted(int w, int h, boolean isFront) {
+                        runOnUiThread(() -> {
+                            btnToggleCamera.setText("⏹️ 关闭 Android 摄像头");
+                            btnToggleCamera.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFF44336)); // 红色
+                            layoutCameraControls.setVisibility(android.view.View.VISIBLE);
+                            cameraPreviewView.setVisibility(android.view.View.VISIBLE);
+                            tvStatus.setText("📷 Android 摄像头推流中 (" + w + "x" + h + " " + (isFront ? "前置" : "后置") + ") · Mac 虚拟摄像头已联动");
+                            tvStatus.setTextColor(0xFF2196F3);
+                        });
+                    }
+
+                    @Override
+                    public void onCameraStopped() {
+                        runOnUiThread(() -> {
+                            btnToggleCamera.setText("📷 启用 Android 摄像头 (Mac 虚拟摄像头)");
+                            btnToggleCamera.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF2196F3)); // 蓝色
+                            layoutCameraControls.setVisibility(android.view.View.GONE);
+                            cameraPreviewView.setVisibility(android.view.View.GONE);
+                            updateStatusUi();
+                        });
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        runOnUiThread(() -> {
+                            Toast.makeText(MainActivity.this, "摄像头异常: " + message, Toast.LENGTH_LONG).show();
+                            stopCameraStream();
+                        });
+                    }
+                }
+        );
+    }
+
+    private void stopCameraStream() {
+        CameraStreamingHelper.getInstance().stopCamera();
     }
 
     private void launchMediaProjectionPrompt() {
@@ -446,6 +562,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        CameraStreamingHelper.getInstance().stopCamera();
         PeerDiscoveryManager.getInstance().stop();
         if (multicastLock != null && multicastLock.isHeld()) {
             multicastLock.release();
