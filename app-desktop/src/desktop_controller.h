@@ -43,6 +43,7 @@ public:
     void SetFastMirrorCallback(FastMirrorCallback cb);
     void SetDiscoveredPhonesCallback(DiscoveredPhonesCallback cb);
     void SetVideoCallback(VideoFrameCallback cb);
+    void SetCameraCallback(VideoFrameCallback cb);
     void RefreshPhones();
     std::vector<acast::discovery::DiscoveredPhone> GetDiscoveredPhones();
     void ConnectWifiPhone(const std::string& ip, uint16_t port = 19999);

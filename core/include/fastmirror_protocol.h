@@ -24,9 +24,10 @@ enum class MessageType : uint8_t {
     DISCONNECT = 0x05,
 
     // 媒体流传输 (0x06 - 0x0F)
-    VIDEO_FRAME = 0x06,       // H.264 / H.265 NALU
+    VIDEO_FRAME = 0x06,       // H.264 / H.265 NALU (屏幕投屏)
     AUDIO_FRAME = 0x07,       // AAC / Opus / PCM
     MEDIA_CONFIG = 0x08,      // 视频分辨率、帧率、音频采样率等配置
+    CAMERA_FRAME = 0x09,      // H.264 NALU (Android 摄像头独立流)
 
     // 触控反向控制 (0x10 - 0x1F)
     TOUCH_DOWN = 0x10,

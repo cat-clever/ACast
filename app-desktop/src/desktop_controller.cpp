@@ -289,6 +289,12 @@ void DesktopController::SetVideoCallback(VideoFrameCallback cb) {
     }
 }
 
+void DesktopController::SetCameraCallback(VideoFrameCallback cb) {
+    if (fastmirror_client_) {
+        fastmirror_client_->SetCameraCallback(cb);
+    }
+}
+
 bool DesktopController::SendTouch(uint8_t action, uint16_t norm_x, uint16_t norm_y) {
     if (fastmirror_client_ && fastmirror_client_->IsConnected()) {
         return fastmirror_client_->SendTouch(action, norm_x, norm_y);

@@ -20,6 +20,7 @@ public class FastMirrorSender {
     private static final byte MSG_PONG = 0x04;
     private static final byte MSG_VIDEO_FRAME = 0x06;
     private static final byte MSG_AUDIO_FRAME = 0x07;
+    private static final byte MSG_CAMERA_FRAME = 0x09;
     private static final byte MSG_TOUCH_DOWN = 0x10;
     private static final byte MSG_TOUCH_MOVE = 0x11;
     private static final byte MSG_TOUCH_UP = 0x12;
@@ -196,6 +197,15 @@ public class FastMirrorSender {
         }
     }
 
+    private byte[] cachedCameraSpsPps;
+
+    public synchronized void setCameraSpsPps(byte[] spsPps) {
+        if (spsPps != null && spsPps.length > 0) {
+            this.cachedCameraSpsPps = spsPps.clone();
+            Log.i(TAG, "FastMirror 已缓存 Camera 独立流 SPS/PPS 配置信息 (" + spsPps.length + " bytes)");
+        }
+    }
+
     private static boolean containsSps(byte[] data) {
         if (data == null || data.length < 5) return false;
         for (int i = 0; i < data.length - 4; i++) {
@@ -222,6 +232,21 @@ public class FastMirrorSender {
         if (isKeyFrame) {
             cachedLatestKeyFramePacket = packet;
         }
+        broadcast(packet);
+    }
+
+    public void sendCamera(byte[] naluData, boolean isKeyFrame, long ptsUs) {
+        if (clientSockets.isEmpty() || naluData == null || naluData.length == 0) return;
+
+        byte[] payloadToSend = naluData;
+        if (isKeyFrame && cachedCameraSpsPps != null && !containsSps(naluData)) {
+            byte[] combined = new byte[cachedCameraSpsPps.length + naluData.length];
+            System.arraycopy(cachedCameraSpsPps, 0, combined, 0, cachedCameraSpsPps.length);
+            System.arraycopy(naluData, 0, combined, cachedCameraSpsPps.length, naluData.length);
+            payloadToSend = combined;
+        }
+
+        byte[] packet = packPacket(MSG_CAMERA_FRAME, payloadToSend);
         broadcast(packet);
     }
 

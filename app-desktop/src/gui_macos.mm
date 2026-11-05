@@ -449,6 +449,195 @@ static NSString* SafeStr(const std::string& str) {
 }
 
 // ============================================================================
+// CameraStreamDecoder: 专用的 Android 摄像头硬件流解码器 (与屏幕投屏解码管线彻底解耦)
+// 支持屏幕投屏与手机虚拟摄像头双流并发、互不抢占、互不关闭！
+// ============================================================================
+
+static void CameraDecompressCallback(void* decompressionOutputRefCon,
+                                     void* sourceFrameRefCon,
+                                     OSStatus status,
+                                     VTDecodeInfoFlags infoFlags,
+                                     CVImageBufferRef imageBuffer,
+                                     CMTime presentationTimeStamp,
+                                     CMTime presentationDuration) {
+    if (status == noErr && imageBuffer != NULL) {
+        // 摄像头独立流：直接分发给虚拟相机直通与本地中继
+        VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
+        CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
+    }
+}
+
+class CameraStreamDecoder {
+public:
+    static CameraStreamDecoder& GetInstance() {
+        static CameraStreamDecoder sInstance;
+        return sInstance;
+    }
+
+    void FeedPacket(const uint8_t* data, size_t size, bool isKey, int64_t pts) {
+        if (!data || size < 4) return;
+        last_camera_frame_time_ = std::chrono::steady_clock::now();
+        has_active_camera_stream_ = true;
+
+        struct NalUnit {
+            const uint8_t* ptr;
+            size_t size;
+            uint8_t type;
+        };
+
+        std::vector<NalUnit> nals;
+        size_t i = 0;
+        while (i + 3 < size) {
+            size_t startCodeLen = 0;
+            if (data[i] == 0 && data[i+1] == 0 && data[i+2] == 1) {
+                startCodeLen = 3;
+            } else if (i + 4 <= size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1) {
+                startCodeLen = 4;
+            }
+
+            if (startCodeLen > 0) {
+                size_t nalStart = i + startCodeLen;
+                size_t nextStart = size;
+                for (size_t j = nalStart; j + 3 <= size; ++j) {
+                    if (data[j] == 0 && data[j+1] == 0 && (data[j+2] == 1 || (j + 4 <= size && data[j+2] == 0 && data[j+3] == 1))) {
+                        nextStart = j;
+                        break;
+                    }
+                }
+                if (nextStart > nalStart) {
+                    NalUnit u;
+                    u.ptr = data + nalStart;
+                    u.size = nextStart - nalStart;
+                    u.type = u.ptr[0] & 0x1F;
+                    nals.push_back(u);
+                }
+                i = nextStart;
+            } else {
+                i++;
+            }
+        }
+
+        bool hasNewParams = false;
+        for (const auto& nal : nals) {
+            if (nal.type == 7) { // SPS
+                if (sps_data_.size() != nal.size || memcmp(sps_data_.data(), nal.ptr, nal.size) != 0) {
+                    sps_data_.assign(nal.ptr, nal.ptr + nal.size);
+                    hasNewParams = true;
+                }
+            } else if (nal.type == 8) { // PPS
+                if (pps_data_.size() != nal.size || memcmp(pps_data_.data(), nal.ptr, nal.size) != 0) {
+                    pps_data_.assign(nal.ptr, nal.ptr + nal.size);
+                    hasNewParams = true;
+                }
+            }
+        }
+
+        if ((hasNewParams || decompression_session_ == NULL || format_description_ == NULL) && !sps_data_.empty() && !pps_data_.empty()) {
+            if (decompression_session_) {
+                VTDecompressionSessionInvalidate(decompression_session_);
+                CFRelease(decompression_session_);
+                decompression_session_ = NULL;
+            }
+            if (format_description_) {
+                CFRelease(format_description_);
+                format_description_ = NULL;
+            }
+
+            const uint8_t* parameterSetPointers[2] = { sps_data_.data(), pps_data_.data() };
+            const size_t parameterSetSizes[2] = { sps_data_.size(), pps_data_.size() };
+
+            OSStatus status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                kCFAllocatorDefault, 2, parameterSetPointers, parameterSetSizes, 4, &format_description_);
+
+            if (status == noErr && format_description_) {
+                VTDecompressionOutputCallbackRecord cbRecord;
+                cbRecord.decompressionOutputCallback = CameraDecompressCallback;
+                cbRecord.decompressionOutputRefCon = this;
+
+                NSDictionary* destinationImageBufferAttributes = @{
+                    (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                    (id)kCVPixelBufferOpenGLCompatibilityKey: @(YES)
+                };
+
+                status = VTDecompressionSessionCreate(
+                    kCFAllocatorDefault, format_description_, NULL,
+                    (__bridge CFDictionaryRef)destinationImageBufferAttributes,
+                    &cbRecord, &decompression_session_);
+
+                if (status == noErr && decompression_session_) {
+                    VTSessionSetProperty(decompression_session_, kVTDecompressionPropertyKey_RealTime, kCFBooleanTrue);
+                }
+            }
+        }
+
+        std::vector<NalUnit> slices;
+        for (const auto& nal : nals) {
+            if (nal.type == 1 || nal.type == 5) {
+                slices.push_back(nal);
+            }
+        }
+
+        if (!slices.empty() && decompression_session_ && format_description_) {
+            size_t totalAvccLen = 0;
+            for (const auto& s : slices) totalAvccLen += 4 + s.size;
+            uint8_t* avcc = (uint8_t*)malloc(totalAvccLen);
+            if (!avcc) return;
+
+            size_t offset = 0;
+            for (const auto& s : slices) {
+                uint32_t sLen = htonl((uint32_t)s.size);
+                memcpy(avcc + offset, &sLen, 4);
+                memcpy(avcc + offset + 4, s.ptr, s.size);
+                offset += 4 + s.size;
+            }
+
+            CMBlockBufferRef blockBuffer = NULL;
+            OSStatus status = CMBlockBufferCreateWithMemoryBlock(
+                kCFAllocatorDefault, avcc, totalAvccLen, kCFAllocatorMalloc, NULL, 0, totalAvccLen, 0, &blockBuffer);
+
+            if (status == noErr && blockBuffer) {
+                CMSampleBufferRef sampleBuffer = NULL;
+                CMSampleTimingInfo timingInfo;
+                timingInfo.duration = kCMTimeInvalid;
+                timingInfo.presentationTimeStamp = (pts > 0) ? CMTimeMake(pts, 1000000) : kCMTimeInvalid;
+                timingInfo.decodeTimeStamp = kCMTimeInvalid;
+
+                status = CMSampleBufferCreateReady(
+                    kCFAllocatorDefault, blockBuffer, format_description_, 1, 1, &timingInfo, 0, NULL, &sampleBuffer);
+
+                if (status == noErr && sampleBuffer) {
+                    VTDecodeFrameFlags decodeFlags = kVTDecodeFrame_EnableAsynchronousDecompression;
+                    VTDecodeInfoFlags flagOut;
+                    VTDecompressionSessionDecodeFrame(decompression_session_, sampleBuffer, decodeFlags, NULL, &flagOut);
+                    CFRelease(sampleBuffer);
+                }
+                CFRelease(blockBuffer);
+            } else {
+                free(avcc);
+            }
+        }
+    }
+
+    bool HasActiveCameraStream() {
+        if (!has_active_camera_stream_) return false;
+        auto now = std::chrono::steady_clock::now();
+        auto diff = std::chrono::duration_cast<std::chrono::seconds>(now - last_camera_frame_time_).count();
+        if (diff > 3) {
+            has_active_camera_stream_ = false;
+        }
+        return has_active_camera_stream_;
+    }
+
+private:
+    VTDecompressionSessionRef decompression_session_{NULL};
+    CMVideoFormatDescriptionRef format_description_{NULL};
+    std::vector<uint8_t> sps_data_;
+    std::vector<uint8_t> pps_data_;
+    std::atomic<bool> has_active_camera_stream_{false};
+    std::chrono::steady_clock::time_point last_camera_frame_time_;
+};
+
+// ============================================================================
 // ScreenMirrorView: 极低延迟硬件解码投屏视窗，支持鼠标触控滑动与电脑键盘直接输入
 // ============================================================================
 
@@ -493,9 +682,11 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         if (cgImage != NULL) {
             [view deliverDecodedImage:cgImage];
         }
-        // 实时分发给 macOS 虚拟摄像头系统扩展与 CMIO 硬件直通 (供 Zoom / FaceTime / 会议软件使用)
-        VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
-        CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
+        // 若当前未激活独立摄像头流，则将屏幕流作为备用直通给虚拟相机；若摄像头激活，则由独立摄像头解码器供应
+        if (!CameraStreamDecoder::GetInstance().HasActiveCameraStream()) {
+            VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
+            CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
+        }
     } else if (status != noErr) {
         [view handleDecodeError:status];
     }
@@ -1362,6 +1553,11 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         AppDelegate* strongSelf = weakSelf;
         if (!strongSelf || !strongSelf->screenView) return;
         [strongSelf->screenView feedVideoPacket:data size:size isKey:is_key pts:pts];
+    });
+
+    // 绑定 Android 摄像头独立硬件流解码回调 (专供虚拟相机与 Zoom / FaceTime，与屏幕投屏双流并发、互不冲突)
+    ctl.SetCameraCallback([](const uint8_t* data, size_t size, bool is_key, int64_t pts) {
+        CameraStreamDecoder::GetInstance().FeedPacket(data, size, is_key, pts);
     });
 
     ctl.SetFastMirrorCallback([weakSelf](bool connected, std::string address) {

@@ -31,6 +31,7 @@ public:
     // 视频与音频数据接收回调
     void SetVideoCallback(VideoFrameCallback cb);
     void SetAudioCallback(AudioFrameCallback cb);
+    void SetCameraCallback(VideoFrameCallback cb);
 
     // 发送 FastMirror 触控事件 (归一化 0~10000)
     bool SendTouch(uint8_t action, uint16_t norm_x, uint16_t norm_y, uint8_t pointer_id = 0);
@@ -61,6 +62,7 @@ private:
     std::mutex cb_mutex_;
     VideoFrameCallback video_cb_;
     AudioFrameCallback audio_cb_;
+    VideoFrameCallback camera_cb_;
 };
 
 } // namespace fastmirror

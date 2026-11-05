@@ -144,6 +144,11 @@ void FastMirrorClient::SetAudioCallback(AudioFrameCallback cb) {
     audio_cb_ = std::move(cb);
 }
 
+void FastMirrorClient::SetCameraCallback(VideoFrameCallback cb) {
+    std::lock_guard<std::mutex> lock(cb_mutex_);
+    camera_cb_ = std::move(cb);
+}
+
 bool FastMirrorClient::SendRawPacket(MessageType type, const uint8_t* payload, uint32_t payload_len) {
     if (!is_connected_ || socket_fd_ < 0) return false;
     std::vector<uint8_t> packet = ProtocolCodec::Pack(type, payload, payload_len);
@@ -339,6 +344,25 @@ void FastMirrorClient::ReceiveLoop() {
             {
                 std::lock_guard<std::mutex> lock(cb_mutex_);
                 cb = video_cb_;
+            }
+            if (cb) {
+                cb(payload.data(), payload.size(), is_key, pts_us);
+            }
+        } else if (msg_type == static_cast<uint8_t>(MessageType::CAMERA_FRAME)) {
+            bool is_key = false;
+            for (size_t i = 0; i + 4 < payload.size(); ++i) {
+                if (payload[i] == 0 && payload[i+1] == 0 &&
+                    ((payload[i+2] == 1 && ((payload[i+3] & 0x1F) == 5 || (payload[i+3] & 0x1F) == 7)) ||
+                     (payload[i+2] == 0 && payload[i+3] == 1 && ((payload[i+4] & 0x1F) == 5 || (payload[i+4] & 0x1F) == 7)))) {
+                    is_key = true;
+                    break;
+                }
+            }
+
+            VideoFrameCallback cb;
+            {
+                std::lock_guard<std::mutex> lock(cb_mutex_);
+                cb = camera_cb_;
             }
             if (cb) {
                 cb(payload.data(), payload.size(), is_key, pts_us);

@@ -133,9 +133,6 @@ public class MainActivity extends AppCompatActivity {
 
         btnToggleCapture.setOnClickListener(v -> {
             if (!isCapturing) {
-                if (CameraStreamingHelper.getInstance().isStreaming()) {
-                    CameraStreamingHelper.getInstance().stopCamera();
-                }
                 requestRequiredPermissionsAndStartCapture();
             } else {
                 stopScreenCapture();
@@ -146,9 +143,6 @@ public class MainActivity extends AppCompatActivity {
             if (CameraStreamingHelper.getInstance().isStreaming()) {
                 stopCameraStream();
             } else {
-                if (isCapturing) {
-                    stopScreenCapture();
-                }
                 checkCameraPermissionAndStart();
             }
         });
