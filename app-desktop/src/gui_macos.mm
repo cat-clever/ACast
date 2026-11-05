@@ -222,7 +222,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         }
     }
 
-    if (hasNewParams && !spsData.empty() && !ppsData.empty()) {
+    if ((hasNewParams || decompressionSession == NULL || formatDescription == NULL) && !spsData.empty() && !ppsData.empty()) {
         if (decompressionSession) {
             VTDecompressionSessionInvalidate(decompressionSession);
             CFRelease(decompressionSession);

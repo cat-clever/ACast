@@ -185,6 +185,8 @@ public class ControlAccessibilityService extends AccessibilityService {
                         "acast:wake_on_click"
                 );
                 wakeLock.acquire(1000);
+                Log.i(TAG, "已触发屏幕点亮唤醒，通知重新激活 VirtualDisplay");
+                ScreenCaptureService.onScreenUnlocked();
             }
         } catch (Throwable t) {
             Log.w(TAG, "唤醒屏幕异常: " + t.getMessage());

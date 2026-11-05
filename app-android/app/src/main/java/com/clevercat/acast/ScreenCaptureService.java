@@ -46,6 +46,11 @@ public class ScreenCaptureService extends Service {
     private PowerManager.WakeLock wakeLock;
     private PowerManager.WakeLock screenWakeLock;
 
+    private int cachedWidth = 1080;
+    private int cachedHeight = 1920;
+    private int cachedDensity = 320;
+    private BroadcastReceiver screenStateReceiver;
+
     private static ScreenCaptureService sInstance;
 
     public static void requestKeyFrame() {
@@ -61,6 +66,85 @@ public class ScreenCaptureService extends Service {
                 Log.w(TAG, "requestKeyFrame 异常: " + t.getMessage());
             }
         }
+    }
+
+    /**
+     * 当屏幕点亮或解锁时，重新绑定 VirtualDisplay 并请求全量关键帧，根治锁屏黑屏
+     */
+    public static void onScreenUnlocked() {
+        if (sInstance != null) {
+            sInstance.createOrResetVirtualDisplay();
+            requestKeyFrame();
+        }
+    }
+
+    public synchronized void createOrResetVirtualDisplay() {
+        if (mediaProjection == null || inputSurface == null) return;
+        try {
+            if (virtualDisplay != null) {
+                try {
+                    virtualDisplay.setSurface(null);
+                    virtualDisplay.release();
+                } catch (Throwable ignored) {}
+                virtualDisplay = null;
+            }
+
+            VirtualDisplay.Callback callback = new VirtualDisplay.Callback() {
+                @Override
+                public void onPaused() {
+                    super.onPaused();
+                    Log.i(TAG, "VirtualDisplay 已暂停 (锁屏息屏)");
+                }
+
+                @Override
+                public void onResumed() {
+                    super.onResumed();
+                    Log.i(TAG, "VirtualDisplay 已恢复 (亮屏解锁)，立即触发关键帧刷新");
+                    requestKeyFrame();
+                }
+
+                @Override
+                public void onStopped() {
+                    super.onStopped();
+                    Log.w(TAG, "VirtualDisplay 已停止");
+                }
+            };
+
+            virtualDisplay = mediaProjection.createVirtualDisplay(
+                    "ACastVirtualDisplay",
+                    cachedWidth, cachedHeight, cachedDensity,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    inputSurface, callback, new Handler(Looper.getMainLooper())
+            );
+            Log.i(TAG, "✓ VirtualDisplay 已成功建立镜像绑定 (" + cachedWidth + "x" + cachedHeight + ")");
+
+            // 重新绑定后立即强制请求关键帧刷新
+            requestKeyFrame();
+        } catch (Throwable t) {
+            Log.e(TAG, "createOrResetVirtualDisplay 失败: " + t.getMessage(), t);
+        }
+    }
+
+    private void registerScreenStateReceiver() {
+        if (screenStateReceiver != null) return;
+        screenStateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                String action = intent.getAction();
+                if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
+                    Log.i(TAG, "✓ 检测到手机屏幕亮屏/解锁 (" + action + ")，执行 VirtualDisplay 唤醒重绑并刷新关键帧...");
+                    onScreenUnlocked();
+                } else if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                    Log.i(TAG, "检测到手机锁屏息屏 (ACTION_SCREEN_OFF)");
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_USER_PRESENT);
+        registerReceiver(screenStateReceiver, filter);
     }
 
     @Override
@@ -103,6 +187,9 @@ public class ScreenCaptureService extends Service {
 
         // 投屏开始：激活全局屏幕常亮保护，防止手机自动休眠锁屏
         ControlAccessibilityService.setKeepScreenOn(true);
+
+        // 注册亮屏、锁屏与解锁广播监听，根治解锁后黑屏
+        registerScreenStateReceiver();
 
         try {
             // 启动 FastMirror 桌面反控通信服务
@@ -228,17 +315,11 @@ public class ScreenCaptureService extends Service {
             inputSurface = videoCodec.createInputSurface();
             videoCodec.start();
 
-            if (virtualDisplay != null) {
-                virtualDisplay.release();
-                virtualDisplay = null;
-            }
+            cachedWidth = width;
+            cachedHeight = height;
+            cachedDensity = density;
 
-            virtualDisplay = mediaProjection.createVirtualDisplay(
-                    "ACastVirtualDisplay",
-                    width, height, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    inputSurface, null, null
-            );
+            createOrResetVirtualDisplay();
 
             isEncoding = true;
             encoderThread = new Thread(this::drainEncoder, "ACastEncoderThread");
@@ -339,6 +420,14 @@ public class ScreenCaptureService extends Service {
             } catch (Throwable ignored) {}
             mediaProjection = null;
         }
+        // 注销屏幕状态广播接收器
+        if (screenStateReceiver != null) {
+            try {
+                unregisterReceiver(screenStateReceiver);
+            } catch (Throwable ignored) {}
+            screenStateReceiver = null;
+        }
+
         // 解除屏幕常亮保护
         ControlAccessibilityService.setKeepScreenOn(false);
 

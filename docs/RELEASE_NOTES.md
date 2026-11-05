@@ -1,6 +1,16 @@
 # ACast 发版说明
 
-## v0.3.9 更新日志 (最新)
+## v0.4.0 更新日志 (最新)
+
+1. **彻底解决锁屏后解锁屏幕一直是黑的但能控制手机的问题 (Unlock Screen Blackout Fix)**：
+   * **VirtualDisplay 亮屏/解锁自动唤醒重绑 (Surface Auto-Recovery)**：在 Android 端 `ScreenCaptureService` 中动态注册全局 `ACTION_SCREEN_ON`、`ACTION_SCREEN_OFF` 和 `ACTION_USER_PRESENT` 广播接收器；当检测到手机亮屏或用户解锁时，自动唤醒 VirtualDisplay 重新建立 Surface 镜像绑定，并接入 `VirtualDisplay.Callback`，彻底解决 Android 系统息屏导致虚拟镜像挂起黑屏的底层缺陷；
+   * **反控操作智能唤醒屏幕与镜像 (Wake-on-Control)**：当用户在电脑端独立窗口点击鼠标或按键时，无障碍服务点亮屏幕的同时立即触发 `ScreenCaptureService.onScreenUnlocked()`，实现电脑端点按手机自动点亮屏幕并恢复彩色推流；
+   * **电脑端硬解会话失效自愈 (Decoder Invalidation Recovery)**：修复 macOS `ScreenMirrorView` 在会话失效（`decompressionSession == NULL`）且 SPS/PPS 内容未变时无法重新初始化的严重缺陷。只要会话为空或格式丢失，收到下一关键帧即刻 100% 重建 VideoToolbox 硬件解码器，杜绝画面永久黑屏；
+   * **解锁即时刷新全量 I 帧**：解锁瞬间向 MediaCodec 注入 `PARAMETER_KEY_REQUEST_SYNC_FRAME`，手机立即推送包含 SPS/PPS 的全新彩色 IDR 帧，绝不复用锁屏期间的全黑帧。
+
+---
+
+## v0.3.9 更新日志
 
 1. **全面支持中文拼音/五笔输入法打字与快捷文本发送 (Full IME & Chinese Input Support)**：
    * **遵循 NSTextInputClient 协议**：投屏视窗（`ScreenMirrorView`）完整实现 macOS 原生 `NSTextInputClient` 协议，激活系统输入法管理器（InputMethodKit）。用户在手机画面上直接敲击中文拼音时，原生拼音选词候选框浮现于视窗下方，选词确认后汉字长句即刻完整上屏注入手机；
