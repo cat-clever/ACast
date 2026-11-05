@@ -668,6 +668,25 @@ private:
     std::chrono::steady_clock::time_point last_camera_frame_time_;
 };
 
+@class ScreenMirrorView;
+
+// ============================================================================
+// 悬浮式极简导航胶囊栏按键 (纯图标、高对比度微交互)
+// ============================================================================
+@interface FloatingNavButton : NSButton {
+    NSTrackingArea* _trackingArea;
+}
+@end
+
+// ============================================================================
+// 屏中悬浮导航栏容器 (毛玻璃深色胶囊 HUD，带平滑阴影与防穿透保护)
+// ============================================================================
+@interface FloatingNavBarView : NSView {
+    NSTrackingArea* _navBarTrackingArea;
+}
+@property (nonatomic, weak) ScreenMirrorView* mirrorView;
+@end
+
 // ============================================================================
 // ScreenMirrorView: 极低延迟硬件解码投屏视窗，支持鼠标触控滑动与电脑键盘直接输入
 // ============================================================================
@@ -690,12 +709,119 @@ private:
     NSMutableAttributedString* markedString;
     NSRange markedRange;
     NSRange selectedRange;
+
+    FloatingNavBarView* floatingNavBar;
+    FloatingNavButton* floatingBackBtn;
+    FloatingNavButton* floatingHomeBtn;
+    FloatingNavButton* floatingRecentsBtn;
+    NSTrackingArea* mirrorTrackingArea;
+    NSTimer* navBarAutoHideTimer;
 }
 
 - (void)feedVideoPacket:(const uint8_t*)data size:(size_t)size isKey:(bool)isKey pts:(int64_t)pts;
 - (void)deliverDecodedImage:(CGImageRef)image;
 - (void)handleDecodeError:(OSStatus)status;
 - (void)clearFrame;
+
+- (void)keepFloatingNavBarVisible;
+- (void)showFloatingNavBarAnimated;
+- (void)hideFloatingNavBarAnimated;
+- (void)hideFloatingNavBarImmediately;
+- (void)updateFloatingNavBarPosition;
+
+@end
+
+@implementation FloatingNavButton
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        [self setButtonType:NSButtonTypeMomentaryChange];
+        [self setBordered:NO];
+        [self setWantsLayer:YES];
+        self.layer.cornerRadius = 15.0;
+        self.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.12].CGColor;
+    }
+    return self;
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (_trackingArea) {
+        [self removeTrackingArea:_trackingArea];
+    }
+    _trackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
+                                                 options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                                                   owner:self
+                                                userInfo:nil];
+    [self addTrackingArea:_trackingArea];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    [super mouseEntered:event];
+    self.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.28].CGColor;
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    [super mouseExited:event];
+    self.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.12].CGColor;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    self.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.42].CGColor;
+    [super mouseDown:event];
+    self.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.28].CGColor;
+}
+
+@end
+
+@implementation FloatingNavBarView
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        [self setWantsLayer:YES];
+        self.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.08 green:0.09 blue:0.12 alpha:0.88].CGColor;
+        self.layer.cornerRadius = 19.0;
+        self.layer.borderWidth = 1.0;
+        self.layer.borderColor = [NSColor colorWithCalibratedWhite:1.0 alpha:0.20].CGColor;
+        self.layer.shadowColor = [NSColor blackColor].CGColor;
+        self.layer.shadowOpacity = 0.45;
+        self.layer.shadowRadius = 8.0;
+        self.layer.shadowOffset = CGSizeMake(0, -2);
+    }
+    return self;
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (_navBarTrackingArea) {
+        [self removeTrackingArea:_navBarTrackingArea];
+    }
+    _navBarTrackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
+                                                       options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                                                         owner:self
+                                                      userInfo:nil];
+    [self addTrackingArea:_navBarTrackingArea];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    [super mouseEntered:event];
+    if (self.mirrorView) {
+        [self.mirrorView keepFloatingNavBarVisible];
+    }
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    [super mouseMoved:event];
+    if (self.mirrorView) {
+        [self.mirrorView keepFloatingNavBarVisible];
+    }
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    // 拦截空白区域点击，避免误触底层手机投屏
+}
 
 @end
 
@@ -745,11 +871,58 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         markedString = nil;
         markedRange = NSMakeRange(NSNotFound, 0);
         selectedRange = NSMakeRange(0, 0);
+
+        mirrorTrackingArea = nil;
+        navBarAutoHideTimer = nil;
+
+        // 屏中悬浮导航胶囊栏：纯图标无文字，初始透明隐藏，鼠标移到底部时平滑悬浮浮现
+        CGFloat barW = 168.0;
+        CGFloat barH = 38.0;
+        floatingNavBar = [[FloatingNavBarView alloc] initWithFrame:NSMakeRect((frameRect.size.width - barW) * 0.5, 16.0, barW, barH)];
+        floatingNavBar.mirrorView = self;
+        [floatingNavBar setAlphaValue:0.0];
+        [floatingNavBar setHidden:YES];
+
+        auto createNavBtn = ^(NSRect frame, NSString* icon, NSString* tooltip, SEL action) {
+            FloatingNavButton* btn = [[FloatingNavButton alloc] initWithFrame:frame];
+            [btn setTarget:self];
+            [btn setAction:action];
+            [btn setToolTip:tooltip];
+
+            NSMutableParagraphStyle* pStyle = [[NSMutableParagraphStyle alloc] init];
+            [pStyle setAlignment:NSTextAlignmentCenter];
+            NSAttributedString* attr = [[NSAttributedString alloc] initWithString:icon attributes:@{
+                NSForegroundColorAttributeName: [NSColor whiteColor],
+                NSFontAttributeName: [NSFont systemFontOfSize:17.0 weight:NSFontWeightMedium],
+                NSParagraphStyleAttributeName: pStyle
+            }];
+            [btn setAttributedTitle:attr];
+            return btn;
+        };
+
+        floatingBackBtn = createNavBtn(NSMakeRect(12, 4, 42, 30), @"◀", @"返回 (Back)", @selector(onFloatingBackClicked:));
+        [floatingNavBar addSubview:floatingBackBtn];
+
+        floatingHomeBtn = createNavBtn(NSMakeRect(63, 4, 42, 30), @"○", @"桌面 (Home)", @selector(onFloatingHomeClicked:));
+        [floatingNavBar addSubview:floatingHomeBtn];
+
+        floatingRecentsBtn = createNavBtn(NSMakeRect(114, 4, 42, 30), @"▢", @"任务 (Tasks)", @selector(onFloatingRecentsClicked:));
+        [floatingNavBar addSubview:floatingRecentsBtn];
+
+        [self addSubview:floatingNavBar];
     }
     return self;
 }
 
 - (void)dealloc {
+    if (navBarAutoHideTimer) {
+        [navBarAutoHideTimer invalidate];
+        navBarAutoHideTimer = nil;
+    }
+    if (mirrorTrackingArea) {
+        [self removeTrackingArea:mirrorTrackingArea];
+        mirrorTrackingArea = nil;
+    }
     [self clearFrame];
     if (decompressionSession) {
         VTDecompressionSessionInvalidate(decompressionSession);
@@ -1018,7 +1191,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     NSString* title = @"📱 实时手机投屏与反控视窗";
     [title drawInRect:NSMakeRect(15, bounds.size.height * 0.5 + 40, bounds.size.width - 30, 30) withAttributes:titleAttr];
 
-    NSString* guide = @"等待手机连接推流中...\n\n在手机 ACast 点击【开启投屏】\n画面将在此实时呈现\n\n🖱️ 鼠标点击与拖拽滑动模拟触控\n⌨️ 电脑键盘直接输入文字与按键\n🖱️ 鼠标右键快速触发手机【返回】";
+    NSString* guide = @"等待手机连接推流中...\n\n在手机 ACast 点击【开启投屏】\n画面将在此实时呈现\n\n🖱️ 鼠标点击与拖拽滑动模拟触控\n⌨️ 电脑键盘直接输入文字与按键\n🖱️ 鼠标右键或 ESC 触发【返回】\n⬇️ 鼠标移至底部悬浮呼出导航键 (◀ ○ ▢)";
     [guide drawInRect:NSMakeRect(20, bounds.size.height * 0.5 - 110, bounds.size.width - 40, 140) withAttributes:subAttr];
 }
 
@@ -1027,6 +1200,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
 - (void)mouseDown:(NSEvent *)initialEvent {
     [[self window] makeFirstResponder:self];
+    [self hideFloatingNavBarImmediately];
     isMouseDown = true;
     lastDragSendTime = std::chrono::steady_clock::now();
     [self sendNormalizedTouchWithEvent:initialEvent action:0]; // 0: DOWN (100% 立即发送)
@@ -1093,9 +1267,141 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
 - (void)viewWillMoveToWindow:(NSWindow *)newWindow {
     [super viewWillMoveToWindow:newWindow];
+    if (newWindow) {
+        [newWindow setAcceptsMouseMovedEvents:YES];
+    }
     if (!newWindow && isMouseDown) {
         [self safetyReleaseTouch];
     }
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (mirrorTrackingArea) {
+        [self removeTrackingArea:mirrorTrackingArea];
+    }
+    NSTrackingAreaOptions options = NSTrackingMouseMoved |
+                                   NSTrackingMouseEnteredAndExited |
+                                   NSTrackingActiveAlways |
+                                   NSTrackingInVisibleRect;
+    mirrorTrackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
+                                                      options:options
+                                                        owner:self
+                                                     userInfo:nil];
+    [self addTrackingArea:mirrorTrackingArea];
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    if (isMouseDown) return;
+
+    NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
+    CGFloat bottomY = (lastAspectFitRect.size.height > 0) ? lastAspectFitRect.origin.y : 0;
+    CGFloat triggerThreshold = bottomY + 80.0;
+
+    // 鼠标向下移动到一定位置时，在屏中平滑悬浮显示虚拟按键胶囊栏
+    if (loc.y >= bottomY && loc.y <= triggerThreshold && loc.x >= 0 && loc.x <= self.bounds.size.width) {
+        [self showFloatingNavBarAnimated];
+    } else {
+        NSPoint locInBar = [floatingNavBar convertPoint:[event locationInWindow] fromView:nil];
+        if (![floatingNavBar mouse:locInBar inRect:[floatingNavBar bounds]]) {
+            [self hideFloatingNavBarAnimated];
+        }
+    }
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    [self hideFloatingNavBarAnimated];
+}
+
+- (void)keepFloatingNavBarVisible {
+    if (navBarAutoHideTimer) {
+        [navBarAutoHideTimer invalidate];
+        navBarAutoHideTimer = nil;
+    }
+    if (floatingNavBar.isHidden || floatingNavBar.alphaValue < 0.99) {
+        [floatingNavBar setHidden:NO];
+        floatingNavBar.alphaValue = 1.0;
+    }
+}
+
+- (void)showFloatingNavBarAnimated {
+    if (!floatingNavBar) return;
+    [self updateFloatingNavBarPosition];
+
+    if (floatingNavBar.isHidden || floatingNavBar.alphaValue < 0.99) {
+        [floatingNavBar setHidden:NO];
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext * _Nonnull context) {
+            context.duration = 0.2;
+            floatingNavBar.animator.alphaValue = 1.0;
+        }];
+    }
+
+    if (navBarAutoHideTimer) {
+        [navBarAutoHideTimer invalidate];
+        navBarAutoHideTimer = nil;
+    }
+    __weak typeof(self) weakSelf = self;
+    navBarAutoHideTimer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:NO block:^(NSTimer * _Nonnull timer) {
+        [weakSelf hideFloatingNavBarAnimated];
+    }];
+}
+
+- (void)hideFloatingNavBarAnimated {
+    if (!floatingNavBar || floatingNavBar.isHidden || floatingNavBar.alphaValue <= 0.01) return;
+    if (navBarAutoHideTimer) {
+        [navBarAutoHideTimer invalidate];
+        navBarAutoHideTimer = nil;
+    }
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext * _Nonnull context) {
+        context.duration = 0.25;
+        floatingNavBar.animator.alphaValue = 0.0;
+    } completionHandler:^{
+        if (floatingNavBar.alphaValue <= 0.01) {
+            [floatingNavBar setHidden:YES];
+        }
+    }];
+}
+
+- (void)hideFloatingNavBarImmediately {
+    if (!floatingNavBar) return;
+    if (navBarAutoHideTimer) {
+        [navBarAutoHideTimer invalidate];
+        navBarAutoHideTimer = nil;
+    }
+    [floatingNavBar setAlphaValue:0.0];
+    [floatingNavBar setHidden:YES];
+}
+
+- (void)layout {
+    [super layout];
+    [self updateFloatingNavBarPosition];
+}
+
+- (void)resizeSubviewsWithOldSize:(NSSize)oldSize {
+    [super resizeSubviewsWithOldSize:oldSize];
+    [self updateFloatingNavBarPosition];
+}
+
+- (void)updateFloatingNavBarPosition {
+    if (!floatingNavBar) return;
+    CGFloat barW = 168.0;
+    CGFloat barH = 38.0;
+    CGFloat barX = (self.bounds.size.width - barW) * 0.5;
+    CGFloat bottomY = (lastAspectFitRect.size.height > 0) ? lastAspectFitRect.origin.y : 0;
+    CGFloat barY = std::max((CGFloat)16.0, bottomY + 16.0);
+    [floatingNavBar setFrame:NSMakeRect(barX, barY, barW, barH)];
+}
+
+- (void)onFloatingBackClicked:(id)sender {
+    acast::desktop::DesktopController::GetInstance().SendBackKey();
+}
+
+- (void)onFloatingHomeClicked:(id)sender {
+    acast::desktop::DesktopController::GetInstance().SendHomeKey();
+}
+
+- (void)onFloatingRecentsClicked:(id)sender {
+    acast::desktop::DesktopController::GetInstance().SendRecentsKey();
 }
 
 - (BOOL)resignFirstResponder {
@@ -1271,7 +1577,6 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, OSSystemExtensionRequestDelegate> {
     NSWindow* window;
     ScreenMirrorView* screenView;
-    NSView* screenNavBar;
     NSButton* popScreenBtn;
     NSView* detachedPlaceholderView;
     NSWindow* standalonePhoneWindow;
@@ -1304,6 +1609,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [window setTitle:@"ACast 跨平台投屏控制台"];
     [window setMinSize:NSMakeSize(1000, 680)];
     [window center];
+    [window setAcceptsMouseMovedEvents:YES];
 
     NSView* contentView = [window contentView];
 
@@ -1315,38 +1621,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [popScreenBtn setAction:@selector(onPopStandaloneWindowClicked:)];
     [contentView addSubview:popScreenBtn];
 
-    screenView = [[ScreenMirrorView alloc] initWithFrame:NSMakeRect(20, 62, 420, 615)];
+    screenView = [[ScreenMirrorView alloc] initWithFrame:NSMakeRect(20, 20, 420, 657)];
     [screenView setAutoresizingMask:NSViewHeightSizable];
     [contentView addSubview:screenView];
-
-    // 控制屏幕底部的虚拟导航三大键 (做在控制屏幕中)
-    screenNavBar = [[NSView alloc] initWithFrame:NSMakeRect(20, 20, 420, 38)];
-    [screenNavBar setWantsLayer:YES];
-    screenNavBar.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.12 green:0.13 blue:0.15 alpha:1.0].CGColor;
-    screenNavBar.layer.cornerRadius = 8.0;
-
-    NSButton* mainNavBack = [[NSButton alloc] initWithFrame:NSMakeRect(15, 4, 120, 30)];
-    [mainNavBack setTitle:@"◀ 返回 (Back)"];
-    [mainNavBack setBezelStyle:NSBezelStyleRounded];
-    [mainNavBack setTarget:self];
-    [mainNavBack setAction:@selector(onUsbBackClicked:)];
-    [screenNavBar addSubview:mainNavBack];
-
-    NSButton* mainNavHome = [[NSButton alloc] initWithFrame:NSMakeRect(150, 4, 120, 30)];
-    [mainNavHome setTitle:@"○ 桌面 (Home)"];
-    [mainNavHome setBezelStyle:NSBezelStyleRounded];
-    [mainNavHome setTarget:self];
-    [mainNavHome setAction:@selector(onUsbHomeClicked:)];
-    [screenNavBar addSubview:mainNavHome];
-
-    NSButton* mainNavRecents = [[NSButton alloc] initWithFrame:NSMakeRect(285, 4, 120, 30)];
-    [mainNavRecents setTitle:@"▢ 任务 (Tasks)"];
-    [mainNavRecents setBezelStyle:NSBezelStyleRounded];
-    [mainNavRecents setTarget:self];
-    [mainNavRecents setAction:@selector(onRecentsClicked:)];
-    [screenNavBar addSubview:mainNavRecents];
-
-    [contentView addSubview:screenNavBar];
 
     // ==================== 独立窗口运行时主窗口占位视图 ====================
     detachedPlaceholderView = [[NSView alloc] initWithFrame:NSMakeRect(20, 20, 420, 657)];
@@ -1498,7 +1775,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [phoneBox addSubview:phoneStatusLabel];
 
     // 快捷控制按键栏
-    usbStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 18, 300, 24)];
+    usbStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 18, 400, 24)];
     [usbStatusLabel setStringValue:@"正在侦测连接状态..."];
     [usbStatusLabel setFont:[NSFont systemFontOfSize:11.5]];
     [usbStatusLabel setBezeled:NO];
@@ -1506,22 +1783,25 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [usbStatusLabel setEditable:NO];
     [phoneBox addSubview:usbStatusLabel];
 
-    NSButton* backBtn = [[NSButton alloc] initWithFrame:NSMakeRect(335, 15, 105, 28)];
-    [backBtn setTitle:@"返回 (Back)"];
+    NSButton* backBtn = [[NSButton alloc] initWithFrame:NSMakeRect(430, 15, 75, 28)];
+    [backBtn setTitle:@"◀ 返回"];
+    [backBtn setToolTip:@"返回键 (Back)"];
     [backBtn setBezelStyle:NSBezelStyleRounded];
     [backBtn setTarget:self];
     [backBtn setAction:@selector(onUsbBackClicked:)];
     [phoneBox addSubview:backBtn];
 
-    NSButton* homeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(445, 15, 105, 28)];
-    [homeBtn setTitle:@"桌面 (Home)"];
+    NSButton* homeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(510, 15, 75, 28)];
+    [homeBtn setTitle:@"○ 桌面"];
+    [homeBtn setToolTip:@"主屏键 (Home)"];
     [homeBtn setBezelStyle:NSBezelStyleRounded];
     [homeBtn setTarget:self];
     [homeBtn setAction:@selector(onUsbHomeClicked:)];
     [phoneBox addSubview:homeBtn];
 
-    NSButton* recentsBtn = [[NSButton alloc] initWithFrame:NSMakeRect(555, 15, 110, 28)];
-    [recentsBtn setTitle:@"任务 (Tasks)"];
+    NSButton* recentsBtn = [[NSButton alloc] initWithFrame:NSMakeRect(590, 15, 75, 28)];
+    [recentsBtn setTitle:@"▢ 任务"];
+    [recentsBtn setToolTip:@"任务管理 (Tasks)"];
     [recentsBtn setBezelStyle:NSBezelStyleRounded];
     [recentsBtn setTarget:self];
     [recentsBtn setAction:@selector(onRecentsClicked:)];
@@ -1830,7 +2110,6 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)detachMainScreenControl {
-    [screenNavBar setHidden:YES];
     [detachedPlaceholderView setHidden:NO];
     [popScreenBtn setTitle:@"⤓ 收回控制屏幕至主窗口"];
 
@@ -1839,7 +2118,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         NSView* container = [standalonePhoneWindow contentView];
         [screenView removeFromSuperview];
         NSRect cBounds = [container bounds];
-        [screenView setFrame:NSMakeRect(0, 44, cBounds.size.width, std::max((CGFloat)100.0, cBounds.size.height - 44))];
+        [screenView setFrame:NSMakeRect(0, 0, cBounds.size.width, cBounds.size.height)];
         [screenView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
         [screenView setHidden:NO];
         [container addSubview:screenView];
@@ -1856,14 +2135,13 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     if (screenView) {
         NSView* contentView = [window contentView];
         [screenView removeFromSuperview];
-        [screenView setFrame:NSMakeRect(20, 62, 420, 615)];
+        [screenView setFrame:NSMakeRect(20, 20, 420, 657)];
         [screenView setAutoresizingMask:NSViewHeightSizable];
         [screenView setHidden:NO];
         [contentView addSubview:screenView];
         [screenView setNeedsDisplay:YES];
         [window makeFirstResponder:screenView];
     }
-    [screenNavBar setHidden:NO];
     [detachedPlaceholderView setHidden:YES];
     [popScreenBtn setTitle:@"⤢ 弹出独立控制屏幕窗口"];
 }
@@ -1887,40 +2165,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         [standalonePhoneWindow center];
         [standalonePhoneWindow setReleasedWhenClosed:NO];
         [standalonePhoneWindow setDelegate:self];
-
-        NSView* container = [standalonePhoneWindow contentView];
-
-        // 底部 44 像素极简导航控制栏 (保留返回、Home、任务三键，居中紧凑布局，彻底移除多余输入框和发送按钮)
-        NSView* navBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 44)];
-        [navBar setAutoresizingMask:NSViewWidthSizable | NSViewMaxYMargin];
-        [navBar setWantsLayer:YES];
-        navBar.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.10 green:0.11 blue:0.13 alpha:1.0].CGColor;
-
-        NSButton* btnBack = [[NSButton alloc] initWithFrame:NSMakeRect(15, 6, 115, 32)];
-        [btnBack setTitle:@"◀ 返回 (Back)"];
-        [btnBack setBezelStyle:NSBezelStyleRounded];
-        [btnBack setTarget:self];
-        [btnBack setAction:@selector(onUsbBackClicked:)];
-        [btnBack setAutoresizingMask:NSViewMaxXMargin];
-        [navBar addSubview:btnBack];
-
-        NSButton* btnHome = [[NSButton alloc] initWithFrame:NSMakeRect(152, 6, 115, 32)];
-        [btnHome setTitle:@"○ 桌面 (Home)"];
-        [btnHome setBezelStyle:NSBezelStyleRounded];
-        [btnHome setTarget:self];
-        [btnHome setAction:@selector(onUsbHomeClicked:)];
-        [btnHome setAutoresizingMask:NSViewMinXMargin | NSViewMaxXMargin];
-        [navBar addSubview:btnHome];
-
-        NSButton* btnRecents = [[NSButton alloc] initWithFrame:NSMakeRect(285, 6, 115, 32)];
-        [btnRecents setTitle:@"▢ 任务 (Tasks)"];
-        [btnRecents setBezelStyle:NSBezelStyleRounded];
-        [btnRecents setTarget:self];
-        [btnRecents setAction:@selector(onRecentsClicked:)];
-        [btnRecents setAutoresizingMask:NSViewMinXMargin];
-        [navBar addSubview:btnRecents];
-
-        [container addSubview:navBar];
+        [standalonePhoneWindow setAcceptsMouseMovedEvents:YES];
     }
 
     [standalonePhoneWindow makeKeyAndOrderFront:nil];
