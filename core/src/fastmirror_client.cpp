@@ -223,7 +223,7 @@ bool FastMirrorClient::SendPing() {
 
 void FastMirrorClient::HeartbeatLoop() {
     while (is_connected_ && !stop_heartbeat_) {
-        for (int i = 0; i < 40; ++i) {
+        for (int i = 0; i < 100; ++i) { // 10秒定时器
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if (!is_connected_ || stop_heartbeat_) return;
         }
@@ -282,11 +282,15 @@ void FastMirrorClient::ReceiveLoop() {
             pts_us = (pts_us << 8) | header_buf[8 + i];
         }
 
+        if (payload_len > 10 * 1024 * 1024) {
+            // 异常超大包保护：说明头字节发生伪魔数错位，滑动 1 字节寻找下一个魔数重同步，绝不断开连接
+            std::memmove(header_buf, header_buf + 1, 15);
+            recvd = 15;
+            continue;
+        }
+
         std::vector<uint8_t> payload;
         if (payload_len > 0) {
-            if (payload_len > 20 * 1024 * 1024) {
-                break; // 异常超大包保护
-            }
             payload.resize(payload_len);
             size_t p_recvd = 0;
             while (p_recvd < payload_len) {

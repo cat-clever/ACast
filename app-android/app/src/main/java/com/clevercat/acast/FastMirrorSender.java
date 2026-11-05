@@ -135,15 +135,8 @@ public class FastMirrorSender {
 
                 // 处理反向控制触控与按键指令
                 if (msgType == MSG_PING) {
-                    // 响应保活 PONG 包
-                    ByteBuffer pongBuf = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN);
-                    pongBuf.putShort(MAGIC);
-                    pongBuf.put(MSG_PONG);
-                    pongBuf.put((byte) 0);
-                    pongBuf.putInt(0);
-                    pongBuf.putLong(System.currentTimeMillis());
-                    out.write(pongBuf.array());
-                    out.flush();
+                    // 客户端单向保活 PING，无需并发往推流数据通道中回写 PONG，彻底杜绝视频流 NALU 数据被污染交错
+                    Log.d(TAG, "FastMirror 收到保活心跳 PING");
                 } else if (msgType == MSG_TOUCH_DOWN || msgType == MSG_TOUCH_MOVE || msgType == MSG_TOUCH_UP) {
                     if (payloadLen >= 5) {
                         ByteBuffer pb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
@@ -238,9 +231,11 @@ public class FastMirrorSender {
     private void broadcast(byte[] packet) {
         for (Socket s : clientSockets) {
             try {
-                OutputStream out = s.getOutputStream();
-                out.write(packet);
-                out.flush();
+                synchronized (s) {
+                    OutputStream out = s.getOutputStream();
+                    out.write(packet);
+                    out.flush();
+                }
             } catch (Exception e) {
                 clientSockets.remove(s);
                 try {

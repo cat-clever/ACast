@@ -285,7 +285,7 @@ public class ControlAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 电脑键盘文本输入上屏：优先尝试无障碍直接填入，若无焦点则通过剪贴板粘贴
+     * 电脑键盘文本输入上屏：优先剪贴板在光标处插入粘贴，备用模式下获取已有文本拼接追加，杜绝整框单字覆盖
      */
     public static void injectText(String text) {
         if (instance == null || text == null || text.isEmpty()) return;
@@ -297,15 +297,28 @@ public class ControlAccessibilityService extends AccessibilityService {
                 if (root != null) {
                     AccessibilityNodeInfo focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
                     if (focused != null) {
+                        // 1. 优先尝试系统剪贴板光标处粘贴（最符合自然打字体验，支持光标位置插入）
+                        ClipboardManager cm = (ClipboardManager) instance.getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            ClipData clip = ClipData.newPlainText("ACast_Input", text);
+                            cm.setPrimaryClip(clip);
+                            if (focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                                return;
+                            }
+                        }
+
+                        // 2. 备用追加模式：读取已有文本并在末尾拼接，绝对不能直接覆盖整框文本！
+                        CharSequence existing = focused.getText();
+                        String newText = (existing != null ? existing.toString() : "") + text;
                         Bundle arguments = new Bundle();
-                        arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+                        arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText);
                         if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
                             return;
                         }
                     }
                 }
 
-                // 备用机制：复制至剪贴板
+                // 3. 兜底备用：剪贴板注入
                 ClipboardManager cm = (ClipboardManager) instance.getSystemService(Context.CLIPBOARD_SERVICE);
                 if (cm != null) {
                     ClipData clip = ClipData.newPlainText("ACast_Input", text);
@@ -349,6 +362,21 @@ public class ControlAccessibilityService extends AccessibilityService {
                     break;
                 case 6: // KEY_QUICK_SETTINGS
                     handled = instance.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
+                    break;
+                case 7: // KEY_DEL (退格删除键)
+                    AccessibilityNodeInfo root = instance.getRootInActiveWindow();
+                    if (root != null) {
+                        AccessibilityNodeInfo focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                        if (focused != null) {
+                            CharSequence cur = focused.getText();
+                            if (cur != null && cur.length() > 0) {
+                                String delText = cur.subSequence(0, cur.length() - 1).toString();
+                                Bundle args = new Bundle();
+                                args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, delText);
+                                handled = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+                            }
+                        }
+                    }
                     break;
                 default:
                     Log.w(TAG, "未知的全局按键码: " + keyCode);

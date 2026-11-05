@@ -1,6 +1,22 @@
 # ACast 发版说明
 
-## v0.3.7 更新日志 (最新)
+## v0.3.8 更新日志 (最新)
+
+1. **彻底解决投屏 1 分钟左右画面卡死定格 Bug (Zero-Lag Frame Coalescing & Decoder Self-Healing)**：
+   * **零积压最新帧调度器 (Zero-Lag Latest Frame Coalescing)**：重构 macOS VideoToolbox 帧渲染管道，主线程渲染消费与解码回调完全解耦。当系统负载或帧率波动导致主线程繁忙时，自动保留最新一帧并立即释放未及渲染的旧帧，从源头杜绝每秒 60 帧产生数十 GB 的 `VTCreateCGImageFromCVPixelBuffer` 内存积压，彻底消除 macOS `com.apple.coremedia.videodecoder` 进程被 watchdog 判定泄露引发的 `XPC_ERROR_CONNECTION_INTERRUPTED` 强杀崩溃；
+   * **解码器故障自动重置与自愈机制**：增加 `handleDecodeError:` 容灾回调。当 VideoToolbox 报告会话异常或损坏帧时，自动重置销毁旧会话，并在收到下一个关键帧（SPS/PPS）时全自动无感重建解码器，杜绝画面永久卡死；
+   * **超低延迟实时时间戳修正**：按苹果官方低延迟推流标准，将 `CMSampleTimingInfo` 配置为 `kCMTimeInvalid`，彻底关闭解码队列内部的时间戳重排序缓冲，降低显示延迟至极限；
+   * **数据流防污染并发加锁保护**：Android 端 `FastMirrorSender` 彻底移除在视频流数据通道上并发回写 PONG 的代码，保持推流通道数据流纯净；同时对 `broadcast` 加以 `synchronized (s)` 线程安全保护，杜绝多线程写 Socket 引起的 NALU 帧头错位；
+   * **控制端超大包自愈对齐**：控制端 `FastMirrorClient` 遇到单包字节超限时，自动执行单字节滑动查找魔数探测自愈，绝不断开连接。
+
+2. **彻底解决电脑键盘输入只有最后一个字母的 Bug (Natural Typing & Delete Support)**：
+   * **光标位置剪贴板优先粘贴 (Clipboard Paste Injection)**：重构 `ControlAccessibilityService.injectText`，优先通过系统剪贴板光标处粘贴（`ACTION_PASTE`），支持中英文长句、单词在光标处自然连续打字；
+   * **已有文本拼接追加兜底**：在不支持粘贴的特殊输入控件中，读取已有文本并在末尾追加拼接后更新，彻底废除直接用单个字母覆盖整框文本（`ACTION_SET_TEXT`）的旧缺陷；
+   * **全能退格删除键 (Backspace/Delete) 支持**：`injectKey` 新增对按键码 7（`KEY_DEL`）的支持，支持逐字退格删除打错字符。
+
+---
+
+## v0.3.7 更新日志
 
 1. **弹出独立控制屏幕窗口后主窗口屏幕控制自动关闭联动 (Exclusive Screen Control)**：
    * **主窗口控制区域自动关闭隐藏**：当点击【⤢ 弹出独立控制屏幕窗口】或手机连接自动弹出独立视窗后，主窗口左侧原有的屏幕投屏画面（`screenView`）与底部导航按键栏（`screenNavBar`）自动关闭隐藏，杜绝多处重复显示和重复操作的割裂感；

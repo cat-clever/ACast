@@ -30,6 +30,9 @@ static NSString* SafeStr(const std::string& str) {
 
 @interface ScreenMirrorView : NSView {
     CGImageRef currentFrameImage;
+    CGImageRef pendingFrameImage;
+    std::mutex frameLock;
+    std::atomic<bool> renderScheduled;
     VTDecompressionSessionRef decompressionSession;
     CMVideoFormatDescriptionRef formatDescription;
     std::vector<uint8_t> spsData;
@@ -39,6 +42,7 @@ static NSString* SafeStr(const std::string& str) {
 
 - (void)feedVideoPacket:(const uint8_t*)data size:(size_t)size isKey:(bool)isKey pts:(int64_t)pts;
 - (void)deliverDecodedImage:(CGImageRef)image;
+- (void)handleDecodeError:(OSStatus)status;
 - (void)clearFrame;
 
 @end
@@ -50,13 +54,15 @@ static void DecompressCallback(void* decompressionOutputRefCon,
                                CVImageBufferRef imageBuffer,
                                CMTime presentationTimeStamp,
                                CMTime presentationDuration) {
+    ScreenMirrorView* view = (__bridge ScreenMirrorView*)decompressionOutputRefCon;
     if (status == noErr && imageBuffer != NULL) {
         CGImageRef cgImage = NULL;
         VTCreateCGImageFromCVPixelBuffer(imageBuffer, NULL, &cgImage);
         if (cgImage != NULL) {
-            ScreenMirrorView* view = (__bridge ScreenMirrorView*)decompressionOutputRefCon;
             [view deliverDecodedImage:cgImage];
         }
+    } else if (status != noErr) {
+        [view handleDecodeError:status];
     }
 }
 
@@ -66,6 +72,8 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     self = [super initWithFrame:frameRect];
     if (self) {
         currentFrameImage = NULL;
+        pendingFrameImage = NULL;
+        renderScheduled = false;
         decompressionSession = NULL;
         formatDescription = NULL;
         lastAspectFitRect = NSZeroRect;
@@ -87,6 +95,13 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)clearFrame {
+    {
+        std::lock_guard<std::mutex> lock(frameLock);
+        if (pendingFrameImage) {
+            CGImageRelease(pendingFrameImage);
+            pendingFrameImage = NULL;
+        }
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self->currentFrameImage) {
             CGImageRelease(self->currentFrameImage);
@@ -97,14 +112,49 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     });
 }
 
+- (void)handleDecodeError:(OSStatus)status {
+    // 解码器状态异常自愈（如会话失效或脏帧）：重置会话，等待下一关键帧自动重建
+    if (decompressionSession) {
+        VTDecompressionSessionInvalidate(decompressionSession);
+        CFRelease(decompressionSession);
+        decompressionSession = NULL;
+    }
+}
+
 - (void)deliverDecodedImage:(CGImageRef)image {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (self->currentFrameImage) {
-            CGImageRelease(self->currentFrameImage);
-        }
-        self->currentFrameImage = image; // 接收所有权
-        [self setNeedsDisplay:YES];
-    });
+    // 零积压最新帧调度器：若渲染跟不上采集帧率，立即释放旧帧，只保留最新待渲染帧，杜绝内存风暴与 XPC 断连
+    CGImageRef oldImage = NULL;
+    {
+        std::lock_guard<std::mutex> lock(frameLock);
+        oldImage = pendingFrameImage;
+        pendingFrameImage = image; // 暂存最新帧所有权
+    }
+    if (oldImage) {
+        CGImageRelease(oldImage); // 立即释放未及渲染的旧帧，绝不积压
+    }
+
+    if (!renderScheduled.exchange(true)) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ScreenMirrorView* strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->renderScheduled = false;
+
+            CGImageRef newFrame = NULL;
+            {
+                std::lock_guard<std::mutex> lock(strongSelf->frameLock);
+                newFrame = strongSelf->pendingFrameImage;
+                strongSelf->pendingFrameImage = NULL;
+            }
+            if (newFrame) {
+                if (strongSelf->currentFrameImage) {
+                    CGImageRelease(strongSelf->currentFrameImage);
+                }
+                strongSelf->currentFrameImage = newFrame;
+                [strongSelf setNeedsDisplay:YES];
+            }
+        });
+    }
 }
 
 - (void)feedVideoPacket:(const uint8_t*)data size:(size_t)size isKey:(bool)isKey pts:(int64_t)pts {
@@ -227,14 +277,17 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
             if (status == noErr && blockBuffer) {
                 CMSampleBufferRef sampleBuffer = NULL;
-                CMSampleTimingInfo timing = { CMTimeMake(1, 30), CMTimeMake(pts, 1000000), kCMTimeInvalid };
+                CMSampleTimingInfo timing = { kCMTimeInvalid, kCMTimeInvalid, kCMTimeInvalid };
                 status = CMSampleBufferCreate(
                     kCFAllocatorDefault, blockBuffer, TRUE, NULL, NULL, formatDescription, 1, 1, &timing, 0, NULL, &sampleBuffer);
 
                 if (status == noErr && sampleBuffer) {
                     VTDecodeFrameFlags flags = kVTDecodeFrame_EnableAsynchronousDecompression;
                     VTDecodeInfoFlags flagOut;
-                    VTDecompressionSessionDecodeFrame(decompressionSession, sampleBuffer, flags, NULL, &flagOut);
+                    OSStatus decodeStatus = VTDecompressionSessionDecodeFrame(decompressionSession, sampleBuffer, flags, NULL, &flagOut);
+                    if (decodeStatus != noErr) {
+                        [self handleDecodeError:decodeStatus];
+                    }
                     CFRelease(sampleBuffer);
                 }
                 CFRelease(blockBuffer);
