@@ -115,6 +115,7 @@ static HWND g_hPhoneWnd = NULL;
 static HWND g_hPhoneBtnBack = NULL;
 static HWND g_hPhoneBtnHome = NULL;
 static HWND g_hPhoneBtnRecents = NULL;
+static HWND g_hBtnShowPhone = NULL;
 
 static void ShowStandalonePhoneWindow(bool show) {
     if (!g_hPhoneWnd) {
@@ -240,6 +241,7 @@ LRESULT CALLBACK PhoneWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     case WM_CLOSE: {
         ShowWindow(hWnd, SW_HIDE);
+        if (g_hBtnShowPhone) SetWindowTextW(g_hBtnShowPhone, L"🖥️ 独立控制屏幕");
         return 0;
     }
     default:
@@ -284,7 +286,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         } else if (id == IDC_BTN_REFRESH_PHONE) {
             acast::desktop::DesktopController::GetInstance().RefreshPhones();
         } else if (id == IDC_BTN_SHOW_PHONE) {
-            ShowStandalonePhoneWindow(true);
+            if (g_hPhoneWnd && IsWindowVisible(g_hPhoneWnd)) {
+                ShowStandalonePhoneWindow(false);
+                if (g_hBtnShowPhone) SetWindowTextW(g_hBtnShowPhone, L"🖥️ 独立控制屏幕");
+            } else {
+                ShowStandalonePhoneWindow(true);
+                if (g_hBtnShowPhone) SetWindowTextW(g_hBtnShowPhone, L"⤓ 收回独立屏幕");
+            }
         } else if (id == IDC_BTN_USB_BACK) {
             acast::desktop::DesktopController::GetInstance().SendBackKey();
         } else if (id == IDC_BTN_USB_HOME) {
@@ -463,8 +471,8 @@ int RunDesktopApp(int argc, char* argv[]) {
     g_hLabelUsb = CreateWindowExW(0, L"STATIC", L"正在检测 USB 手机...", WS_CHILD | WS_VISIBLE | SS_LEFT, 35, 150, 230, 22, g_hWnd, (HMENU)IDC_LABEL_USB_STATUS, hInstance, NULL);
     SendMessageW(g_hLabelUsb, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-    HWND hBtnShowPhone = CreateWindowExW(0, L"BUTTON", L"🖥️ 独立控制屏幕", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 275, 146, 125, 28, g_hWnd, (HMENU)IDC_BTN_SHOW_PHONE, hInstance, NULL);
-    SendMessageW(hBtnShowPhone, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    g_hBtnShowPhone = CreateWindowExW(0, L"BUTTON", L"🖥️ 独立控制屏幕", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 275, 146, 125, 28, g_hWnd, (HMENU)IDC_BTN_SHOW_PHONE, hInstance, NULL);
+    SendMessageW(g_hBtnShowPhone, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
     HWND hBtnBack = CreateWindowExW(0, L"BUTTON", L"◀ 返回", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 410, 146, 95, 28, g_hWnd, (HMENU)IDC_BTN_USB_BACK, hInstance, NULL);
     SendMessageW(hBtnBack, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);

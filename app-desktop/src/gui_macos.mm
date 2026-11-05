@@ -381,9 +381,12 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 // AppDelegate: 控制台主控制器
 // ============================================================================
 
-@interface AppDelegate : NSObject <NSApplicationDelegate> {
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate> {
     NSWindow* window;
     ScreenMirrorView* screenView;
+    NSView* screenNavBar;
+    NSButton* popScreenBtn;
+    NSView* detachedPlaceholderView;
     NSWindow* standalonePhoneWindow;
     ScreenMirrorView* standaloneScreenView;
     NSTextView* logTextView;
@@ -417,7 +420,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     NSView* contentView = [window contentView];
 
     // ==================== 左侧：手机实时投屏与控制视窗 ====================
-    NSButton* popScreenBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 685, 420, 28)];
+    popScreenBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 685, 420, 28)];
     [popScreenBtn setTitle:@"⤢ 弹出独立控制屏幕窗口"];
     [popScreenBtn setBezelStyle:NSBezelStyleRounded];
     [popScreenBtn setTarget:self];
@@ -429,7 +432,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [contentView addSubview:screenView];
 
     // 控制屏幕底部的虚拟导航三大键 (做在控制屏幕中)
-    NSView* screenNavBar = [[NSView alloc] initWithFrame:NSMakeRect(20, 20, 420, 38)];
+    screenNavBar = [[NSView alloc] initWithFrame:NSMakeRect(20, 20, 420, 38)];
     [screenNavBar setWantsLayer:YES];
     screenNavBar.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.12 green:0.13 blue:0.15 alpha:1.0].CGColor;
     screenNavBar.layer.cornerRadius = 8.0;
@@ -456,6 +459,57 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [screenNavBar addSubview:mainNavRecents];
 
     [contentView addSubview:screenNavBar];
+
+    // ==================== 独立窗口运行时主窗口占位视图 ====================
+    detachedPlaceholderView = [[NSView alloc] initWithFrame:NSMakeRect(20, 20, 420, 657)];
+    [detachedPlaceholderView setAutoresizingMask:NSViewHeightSizable];
+    [detachedPlaceholderView setWantsLayer:YES];
+    detachedPlaceholderView.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.09 green:0.10 blue:0.12 alpha:1.0].CGColor;
+    detachedPlaceholderView.layer.cornerRadius = 10.0;
+    detachedPlaceholderView.layer.borderWidth = 1.0;
+    detachedPlaceholderView.layer.borderColor = [NSColor colorWithCalibratedRed:0.18 green:0.20 blue:0.24 alpha:1.0].CGColor;
+
+    NSTextField* placeholderIcon = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 400, 380, 50)];
+    [placeholderIcon setStringValue:@"🖥️"];
+    [placeholderIcon setFont:[NSFont systemFontOfSize:42]];
+    [placeholderIcon setAlignment:NSTextAlignmentCenter];
+    [placeholderIcon setBezeled:NO];
+    [placeholderIcon setDrawsBackground:NO];
+    [placeholderIcon setEditable:NO];
+    [placeholderIcon setSelectable:NO];
+    [detachedPlaceholderView addSubview:placeholderIcon];
+
+    NSTextField* placeholderTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 350, 380, 30)];
+    [placeholderTitle setStringValue:@"独立控制屏幕视窗运行中"];
+    [placeholderTitle setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightBold]];
+    [placeholderTitle setTextColor:[NSColor labelColor]];
+    [placeholderTitle setAlignment:NSTextAlignmentCenter];
+    [placeholderTitle setBezeled:NO];
+    [placeholderTitle setDrawsBackground:NO];
+    [placeholderTitle setEditable:NO];
+    [placeholderTitle setSelectable:NO];
+    [detachedPlaceholderView addSubview:placeholderTitle];
+
+    NSTextField* placeholderDesc = [[NSTextField alloc] initWithFrame:NSMakeRect(30, 275, 360, 65)];
+    [placeholderDesc setStringValue:@"手机投屏画面与导航三大键已移至专属独立窗口。\n您可以在独立窗口中自由拖拽缩放、全屏高清观看及鼠标键盘操控。"];
+    [placeholderDesc setFont:[NSFont systemFontOfSize:12 weight:NSFontWeightRegular]];
+    [placeholderDesc setTextColor:[NSColor secondaryLabelColor]];
+    [placeholderDesc setAlignment:NSTextAlignmentCenter];
+    [placeholderDesc setBezeled:NO];
+    [placeholderDesc setDrawsBackground:NO];
+    [placeholderDesc setEditable:NO];
+    [placeholderDesc setSelectable:NO];
+    [detachedPlaceholderView addSubview:placeholderDesc];
+
+    NSButton* restoreBtn = [[NSButton alloc] initWithFrame:NSMakeRect(110, 215, 200, 36)];
+    [restoreBtn setTitle:@"⤓ 收回控制屏幕至主窗口"];
+    [restoreBtn setBezelStyle:NSBezelStyleRounded];
+    [restoreBtn setTarget:self];
+    [restoreBtn setAction:@selector(restoreMainScreenControl)];
+    [detachedPlaceholderView addSubview:restoreBtn];
+
+    [detachedPlaceholderView setHidden:YES];
+    [contentView addSubview:detachedPlaceholderView];
 
     // ==================== 右侧控制区基准坐标 ====================
     CGFloat rightX = 460;
@@ -635,15 +689,15 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         });
     });
 
-    // 绑定实时视频流硬解回调 (主视窗与独立控制视窗同步渲染)
+    // 绑定实时视频流硬解回调 (独立控制视窗与主视窗互斥智能分发)
     ctl.SetVideoCallback([weakSelf](const uint8_t* data, size_t size, bool is_key, int64_t pts) {
         AppDelegate* strongSelf = weakSelf;
         if (!strongSelf) return;
-        if (strongSelf->screenView) {
-            [strongSelf->screenView feedVideoPacket:data size:size isKey:is_key pts:pts];
-        }
-        if (strongSelf->standaloneScreenView) {
+        bool hasStandalone = (strongSelf->standalonePhoneWindow && [strongSelf->standalonePhoneWindow isVisible] && strongSelf->standaloneScreenView);
+        if (hasStandalone) {
             [strongSelf->standaloneScreenView feedVideoPacket:data size:size isKey:is_key pts:pts];
+        } else if (strongSelf->screenView && ![strongSelf->screenView isHidden]) {
+            [strongSelf->screenView feedVideoPacket:data size:size isKey:is_key pts:pts];
         }
     });
 
@@ -656,8 +710,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
                 [strongSelf->phoneStatusLabel setTextColor:[NSColor systemGreenColor]];
                 [strongSelf->connectPhoneBtn setTitle:@"断开连接"];
 
-                // 局域网直连成功后，自动弹出独立的手机控制视窗！
+                // 局域网直连成功后，自动弹出独立的手机控制视窗，并关闭主窗口的屏幕控制
                 [strongSelf showStandalonePhoneWindow];
+                [strongSelf detachMainScreenControl];
                 if (strongSelf->standalonePhoneWindow && !address.empty()) {
                     [strongSelf->standalonePhoneWindow setTitle:[NSString stringWithFormat:@"ACast 手机投屏控制 - %@", SafeStr(address)]];
                 }
@@ -665,6 +720,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
                 [strongSelf->phoneStatusLabel setStringValue:@"状态: 未连接"];
                 [strongSelf->phoneStatusLabel setTextColor:[NSColor secondaryLabelColor]];
                 [strongSelf->connectPhoneBtn setTitle:@"连接手机"];
+                [strongSelf restoreMainScreenControl];
                 [strongSelf->screenView clearFrame];
                 if (strongSelf->standaloneScreenView) {
                     [strongSelf->standaloneScreenView clearFrame];
@@ -825,7 +881,35 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)onPopStandaloneWindowClicked:(id)sender {
-    [self showStandalonePhoneWindow];
+    if (standalonePhoneWindow && [standalonePhoneWindow isVisible]) {
+        [self restoreMainScreenControl];
+    } else {
+        [self showStandalonePhoneWindow];
+        [self detachMainScreenControl];
+    }
+}
+
+- (void)detachMainScreenControl {
+    [screenView setHidden:YES];
+    [screenNavBar setHidden:YES];
+    [detachedPlaceholderView setHidden:NO];
+    [popScreenBtn setTitle:@"⤓ 收回控制屏幕至主窗口"];
+}
+
+- (void)restoreMainScreenControl {
+    if (standalonePhoneWindow && [standalonePhoneWindow isVisible]) {
+        [standalonePhoneWindow orderOut:nil];
+    }
+    [screenView setHidden:NO];
+    [screenNavBar setHidden:NO];
+    [detachedPlaceholderView setHidden:YES];
+    [popScreenBtn setTitle:@"⤢ 弹出独立控制屏幕窗口"];
+}
+
+- (void)windowWillClose:(NSNotification *)notification {
+    if ([notification object] == standalonePhoneWindow) {
+        [self restoreMainScreenControl];
+    }
 }
 
 - (void)showStandalonePhoneWindow {
@@ -840,6 +924,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         [standalonePhoneWindow setMinSize:NSMakeSize(320, 560)];
         [standalonePhoneWindow center];
         [standalonePhoneWindow setReleasedWhenClosed:NO];
+        [standalonePhoneWindow setDelegate:self];
 
         NSView* container = [standalonePhoneWindow contentView];
 
