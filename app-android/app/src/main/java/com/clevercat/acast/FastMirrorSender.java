@@ -47,6 +47,7 @@ public class FastMirrorSender {
     private Thread serverThread;
     private final CopyOnWriteArrayList<Socket> clientSockets = new CopyOnWriteArrayList<>();
     private byte[] cachedSpsPps = null;
+    private volatile byte[] cachedLatestKeyFramePacket = null;
 
     public synchronized void startServer(int port) {
         if (isRunning && serverSocket != null && !serverSocket.isClosed()) return;
@@ -69,7 +70,18 @@ public class FastMirrorSender {
                     clientSockets.add(client);
                     Log.i(TAG, "新控制器客户端已连接: " + client.getRemoteSocketAddress());
 
-                    // 新客户端连入，立即请求关键帧 (I-Frame/IDR)，确保首帧即时秒开呈现
+                    // 若存在已缓存的关键帧，第一时间单播给新客户端，实现首屏 0ms 瞬间秒开出图
+                    byte[] initialKeyFrame = cachedLatestKeyFramePacket;
+                    if (initialKeyFrame != null) {
+                        try {
+                            OutputStream out = client.getOutputStream();
+                            out.write(initialKeyFrame);
+                            out.flush();
+                            Log.i(TAG, "已为新客户端即时直推首屏关键帧 (" + initialKeyFrame.length + " bytes)");
+                        } catch (Exception ignored) {}
+                    }
+
+                    // 立即请求编码器刷新关键帧 (I-Frame/IDR)
                     ScreenCaptureService.requestKeyFrame();
 
                     // 启动监听反向控制指令接收线程
@@ -206,6 +218,9 @@ public class FastMirrorSender {
         }
 
         byte[] packet = packPacket(MSG_VIDEO_FRAME, payloadToSend);
+        if (isKeyFrame) {
+            cachedLatestKeyFramePacket = packet;
+        }
         broadcast(packet);
     }
 

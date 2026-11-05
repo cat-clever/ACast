@@ -37,7 +37,11 @@ public class ControlAccessibilityService extends AccessibilityService {
     private static long downTimeMs = 0L;
     private static float lastNormX = 0f;
     private static float lastNormY = 0f;
+    private static float lastDispatchedX = 0f;
+    private static float lastDispatchedY = 0f;
+    private static long lastDispatchTimeMs = 0L;
     private static boolean isPointerDown = false;
+    private static boolean hasMoved = false;
 
     @Override
     public void onServiceConnected() {
@@ -204,7 +208,7 @@ public class ControlAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 响应电脑端鼠标点击与拖拽滑动模拟触控
+     * 响应电脑端鼠标点击与拖拽滑动模拟触控（支持实时跟手滑动与平滑惯性）
      * @param action 0x10: DOWN, 0x11: MOVE, 0x12: UP
      * @param normX 归一化 X (0 ~ 10000)
      * @param normY 归一化 Y (0 ~ 10000)
@@ -221,16 +225,63 @@ public class ControlAccessibilityService extends AccessibilityService {
 
         if (action == 0x10) { // TOUCH_DOWN
             isPointerDown = true;
+            hasMoved = false;
             downNormX = currentX;
             downNormY = currentY;
             lastNormX = currentX;
             lastNormY = currentY;
+            lastDispatchedX = currentX;
+            lastDispatchedY = currentY;
             downTimeMs = System.currentTimeMillis();
+            lastDispatchTimeMs = downTimeMs;
             wakeUpScreenIfNeeded();
         } else if (action == 0x11) { // TOUCH_MOVE
-            if (isPointerDown) {
-                lastNormX = currentX;
-                lastNormY = currentY;
+            if (!isPointerDown) return;
+            lastNormX = currentX;
+            lastNormY = currentY;
+
+            float totalDx = currentX - downNormX;
+            float totalDy = currentY - downNormY;
+            double totalDist = Math.hypot(totalDx, totalDy);
+
+            // 移动超过 10 像素即判定为滑动操作
+            if (totalDist > 10.0) {
+                hasMoved = true;
+            }
+
+            if (hasMoved) {
+                long now = System.currentTimeMillis();
+                float stepDx = currentX - lastDispatchedX;
+                float stepDy = currentY - lastDispatchedY;
+                double stepDist = Math.hypot(stepDx, stepDy);
+                long elapsed = now - lastDispatchTimeMs;
+
+                // 当移动位移大于等于 12 像素，且距离上一段手势至少 35ms 时，立即实时注入平滑滑动手势！
+                if (stepDist >= 12.0 && elapsed >= 35) {
+                    float fromX = lastDispatchedX;
+                    float fromY = lastDispatchedY;
+                    float toX = currentX;
+                    float toY = currentY;
+                    long dur = Math.max(30, Math.min(elapsed, 80));
+
+                    lastDispatchedX = currentX;
+                    lastDispatchedY = currentY;
+                    lastDispatchTimeMs = now;
+
+                    sMainHandler.post(() -> {
+                        if (instance == null) return;
+                        try {
+                            Path path = new Path();
+                            path.moveTo(fromX, fromY);
+                            path.lineTo(toX, toY);
+                            GestureDescription.Builder builder = new GestureDescription.Builder();
+                            builder.addStroke(new GestureDescription.StrokeDescription(path, 0, dur));
+                            instance.dispatchGesture(builder.build(), null, null);
+                        } catch (Throwable t) {
+                            Log.w(TAG, "实时手势注入异常: " + t.getMessage());
+                        }
+                    });
+                }
             }
         } else if (action == 0x12) { // TOUCH_UP
             if (!isPointerDown) return;
@@ -242,43 +293,36 @@ public class ControlAccessibilityService extends AccessibilityService {
             float endX = lastNormX;
             float endY = lastNormY;
 
-            float dx = endX - startX;
-            float dy = endY - startY;
-            double dist = Math.hypot(dx, dy);
-
             sMainHandler.post(() -> {
                 if (instance == null) return;
                 try {
                     Path path = new Path();
                     path.moveTo(startX, startY);
 
-                    long strokeDur;
-                    if (dist < 20.0) {
-                        // 点按操作：必须增加微小偏移 (+1.0f)，确保 Path 长度非零，避免系统抛出 Empty Path 异常
+                    GestureDescription.Builder builder = new GestureDescription.Builder();
+                    if (!hasMoved) {
+                        // 1. 纯点击操作 (Tap)：在原位置微位移触发单击
                         path.lineTo(startX + 1.0f, startY + 1.0f);
-                        strokeDur = Math.max(50, Math.min(duration, 300));
+                        long clickDur = Math.max(30, Math.min(duration, 150));
+                        builder.addStroke(new GestureDescription.StrokeDescription(path, 0, clickDur));
                     } else {
-                        // 滑动/拖拽手势
-                        path.lineTo(endX, endY);
-                        strokeDur = Math.max(100, Math.min(duration, 400));
+                        // 2. 拖拽松手 (Fling/Up)：若最后一段还有位移，或附带惯性滑动
+                        float lastDx = endX - lastDispatchedX;
+                        float lastDy = endY - lastDispatchedY;
+                        double remDist = Math.hypot(lastDx, lastDy);
+                        if (remDist > 5.0) {
+                            path.reset();
+                            path.moveTo(lastDispatchedX, lastDispatchedY);
+                            path.lineTo(endX, endY);
+                            builder.addStroke(new GestureDescription.StrokeDescription(path, 0, 50));
+                        } else {
+                            return; // 之前已实时跟手滑动完成
+                        }
                     }
 
-                    GestureDescription.Builder builder = new GestureDescription.Builder();
-                    builder.addStroke(new GestureDescription.StrokeDescription(path, 0, strokeDur));
-                    instance.dispatchGesture(builder.build(), new GestureResultCallback() {
-                        @Override
-                        public void onCompleted(GestureDescription gestureDescription) {
-                            super.onCompleted(gestureDescription);
-                        }
-
-                        @Override
-                        public void onCancelled(GestureDescription gestureDescription) {
-                            super.onCancelled(gestureDescription);
-                            Log.w(TAG, "手势模拟被系统取消");
-                        }
-                    }, null);
+                    instance.dispatchGesture(builder.build(), null, null);
                 } catch (Throwable t) {
-                    Log.e(TAG, "dispatchGesture 执行异常: " + t.getMessage(), t);
+                    Log.e(TAG, "TOUCH_UP 异常: " + t.getMessage(), t);
                 }
             });
         }

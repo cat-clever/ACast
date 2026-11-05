@@ -219,8 +219,8 @@ public class ScreenCaptureService extends Service {
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                // 画面静止时每隔 100ms 重复上一帧，保证实时流恒定输出，杜绝电视 2 秒无帧断流报 Operation Stopped
-                format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100000L);
+                // 画面静止时每隔 50ms (20fps) 重复上一帧，保证实时流恒定输出，首屏秒开不卡顿
+                format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 50000L);
             }
 
             videoCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);

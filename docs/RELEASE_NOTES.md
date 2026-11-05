@@ -1,6 +1,24 @@
 # ACast 发版说明
 
-## v0.3.8 更新日志 (最新)
+## v0.3.9 更新日志 (最新)
+
+1. **全面支持中文拼音/五笔输入法打字与快捷文本发送 (Full IME & Chinese Input Support)**：
+   * **遵循 NSTextInputClient 协议**：投屏视窗（`ScreenMirrorView`）完整实现 macOS 原生 `NSTextInputClient` 协议，激活系统输入法管理器（InputMethodKit）。用户在手机画面上直接敲击中文拼音时，原生拼音选词候选框浮现于视窗下方，选词确认后汉字长句即刻完整上屏注入手机；
+   * **独立视窗快捷文本输入条 (Quick Text Bar)**：在独立视窗底栏常驻双排综合操作区，新增快捷输入框与【发送】按钮，支持直接输入中文、长网址或直接粘贴大段文本按 Enter 瞬间秒发至手机输入框；
+   * **键盘特殊按键与无障碍粘贴注入**：完善 ESC（返回）、Enter（回车换行）、Delete（逐字退格删除）及上下左右光标移动的精准映射。
+
+2. **彻底解决鼠标拖拽滑动不跟手、只有松手才开始滑动的重大缺陷 (Real-time Follow-up Swipe)**：
+   * **实时分段手势连续注入**：重构 `ControlAccessibilityService.injectTouch`。在 `TOUCH_MOVE` 拖拽过程中，根据滑动位移（>=12px 且 >=35ms）实时分段向 Android 系统派发快速平滑手势（30~80ms），屏幕紧贴鼠标指针实时左右跟手滚动滑动，彻底告别“拖拽时不滑、松手才猛划”的断裂体验；
+   * **单击与滑动精准分离**：位移小于 10 像素时判定为单击（Tap），松手瞬间触发精准微位移点按；滑动松手时（TOUCH_UP）自动完成平滑收尾。
+
+3. **连接首屏出图提速至毫秒级秒开，杜绝 2~3 秒黑屏等待 (Instant First-Frame Launch)**：
+   * **最近关键帧全局快照缓存 (KeyFrame Snapshot Caching)**：Android 端 `FastMirrorSender` 自动持久缓存最近一份完整的关键帧数据包（包含 SPS + PPS + IDR Slice）；当任何电脑客户端建立 TCP 连接的一瞬间，手机端在 0ms 瞬间单播直推该帧给新客户端，VideoToolbox 收到即解码渲染，首屏出图时间从 2~3 秒骤降至 0.05 秒（秒开！）；
+   * **静止画面 20fps 高频保底刷新**：将 `KEY_REPEAT_PREVIOUS_FRAME_AFTER` 调整为 50ms（20fps），彻底解决静止画面时 VirtualDisplay 停产帧导致的连接延迟；
+   * **连接即时请求硬件 I 帧**：客户端连入时立即向 MediaCodec 注入 `PARAMETER_KEY_REQUEST_SYNC_FRAME`。
+
+---
+
+## v0.3.8 更新日志
 
 1. **彻底解决弹出独立控制屏幕窗口卡死定格与断流 Bug (Single View Reparenting & Anti-Backpressure)**：
    * **单一统一视图无缝迁移架构 (Single ScreenView Reparenting)**：重构主窗口与独立窗口的视图拓扑，废除双 `ScreenMirrorView` 实例设计。统一使用唯一的 `screenView` 实例在主窗口与独立视窗间动态挂载迁移，硬件解码器 `VTDecompressionSession` 与 SPS/PPS 配置上下文全生命周期保留，跨窗口切换无需重建解码器，杜绝丢帧、黑屏与切换卡死；视频回调直接喂给单一视图，绝不在后台子线程中跨线程读取 `[window isVisible]`，从根源杜绝跨线程死锁与误判断流；

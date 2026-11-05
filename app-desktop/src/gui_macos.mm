@@ -28,7 +28,7 @@ static NSString* SafeStr(const std::string& str) {
 // ScreenMirrorView: 极低延迟硬件解码投屏视窗，支持鼠标触控滑动与电脑键盘直接输入
 // ============================================================================
 
-@interface ScreenMirrorView : NSView {
+@interface ScreenMirrorView : NSView <NSTextInputClient> {
     CGImageRef currentFrameImage;
     CGImageRef pendingFrameImage;
     std::mutex frameLock;
@@ -39,6 +39,10 @@ static NSString* SafeStr(const std::string& str) {
     std::vector<uint8_t> ppsData;
     NSRect lastAspectFitRect;
     std::chrono::steady_clock::time_point lastDragSendTime;
+
+    NSMutableAttributedString* markedString;
+    NSRange markedRange;
+    NSRange selectedRange;
 }
 
 - (void)feedVideoPacket:(const uint8_t*)data size:(size_t)size isKey:(bool)isKey pts:(int64_t)pts;
@@ -79,6 +83,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         formatDescription = NULL;
         lastAspectFitRect = NSZeroRect;
         lastDragSendTime = std::chrono::steady_clock::now();
+        markedString = nil;
+        markedRange = NSMakeRange(NSNotFound, 0);
+        selectedRange = NSMakeRange(0, 0);
     }
     return self;
 }
@@ -406,9 +413,16 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)keyDown:(NSEvent *)event {
+    // 1. 如果当前正处于中文拼音打字合成中，优先交由系统输入法处理候选词与选词上屏
+    if ([self hasMarkedText]) {
+        [[self inputContext] handleEvent:event];
+        return;
+    }
+
     unsigned short code = [event keyCode];
     auto& ctl = acast::desktop::DesktopController::GetInstance();
 
+    // 2. 当没有处于输入法拼音状态时，拦截系统功能键 (ESC/Enter/Delete/方向键)
     if (code == 53) { // ESC -> 返回
         ctl.SendBackKey();
         return;
@@ -432,9 +446,94 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         return;
     }
 
-    NSString* chars = [event characters];
-    if (chars && [chars length] > 0) {
-        ctl.SendTextInput([chars UTF8String]);
+    // 3. 优先交由输入法上下文解释输入事件 (激活拼音/五笔等输入法浮窗)
+    if (![[self inputContext] handleEvent:event]) {
+        [self interpretKeyEvents:@[event]];
+    }
+}
+
+// ==================== NSTextInputClient 协议实现 (支持中文汉字输入法) ====================
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    NSString* textToInsert = [string isKindOfClass:[NSAttributedString class]] ? [string string] : string;
+    markedString = nil;
+    markedRange = NSMakeRange(NSNotFound, 0);
+    selectedRange = NSMakeRange(0, 0);
+
+    if (textToInsert && [textToInsert length] > 0) {
+        acast::desktop::DesktopController::GetInstance().SendTextInput([textToInsert UTF8String]);
+    }
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setMarkedText:(id)string selectedRange:(NSRange)newSelectedRange replacementRange:(NSRange)replacementRange {
+    if ([string isKindOfClass:[NSAttributedString class]]) {
+        markedString = [[NSMutableAttributedString alloc] initWithAttributedString:string];
+    } else {
+        markedString = [[NSMutableAttributedString alloc] initWithString:string];
+    }
+    markedRange = NSMakeRange(0, [markedString length]);
+    selectedRange = newSelectedRange;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)unmarkText {
+    markedString = nil;
+    markedRange = NSMakeRange(NSNotFound, 0);
+    [self setNeedsDisplay:YES];
+}
+
+- (BOOL)hasMarkedText {
+    return markedString != nil && [markedString length] > 0;
+}
+
+- (NSRange)markedRange {
+    return markedString ? markedRange : NSMakeRange(NSNotFound, 0);
+}
+
+- (NSRange)selectedRange {
+    return selectedRange;
+}
+
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
+    return @[];
+}
+
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    if (actualRange) *actualRange = range;
+    return nil;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    return 0;
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    if (actualRange) *actualRange = range;
+    // 将中文拼音候选窗口精准定位在手机投屏视窗中下部，提供舒适自然的拼音选词视觉体验
+    NSRect bounds = [self bounds];
+    NSPoint centerPoint = NSMakePoint(NSMidX(bounds), std::max((CGFloat)60.0, NSMidY(bounds) - 120));
+    NSPoint winPoint = [self convertPoint:centerPoint toView:nil];
+    NSRect screenRect = [[self window] convertRectToScreen:NSMakeRect(winPoint.x, winPoint.y, 1, 1)];
+    return screenRect;
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    auto& ctl = acast::desktop::DesktopController::GetInstance();
+    if (selector == @selector(deleteBackward:)) {
+        ctl.SendKey(7);
+    } else if (selector == @selector(insertNewline:)) {
+        ctl.SendKey(8);
+    } else if (selector == @selector(cancelOperation:)) {
+        ctl.SendBackKey();
+    } else if (selector == @selector(moveUp:)) {
+        ctl.SendKey(9);
+    } else if (selector == @selector(moveDown:)) {
+        ctl.SendKey(10);
+    } else if (selector == @selector(moveLeft:)) {
+        ctl.SendKey(11);
+    } else if (selector == @selector(moveRight:)) {
+        ctl.SendKey(12);
     }
 }
 
@@ -451,6 +550,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     NSButton* popScreenBtn;
     NSView* detachedPlaceholderView;
     NSWindow* standalonePhoneWindow;
+    NSTextField* standaloneQuickInput;
     NSTextView* logTextView;
     NSTextField* updateBannerLabel;
     NSButton* updateButton;
@@ -934,6 +1034,20 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     acast::desktop::DesktopController::GetInstance().SendRecentsKey();
 }
 
+- (void)onQuickInputSend:(NSTextField*)sender {
+    NSString* text = [sender stringValue];
+    if (text && [text length] > 0) {
+        acast::desktop::DesktopController::GetInstance().SendTextInput([text UTF8String]);
+        [sender setStringValue:@""];
+    }
+}
+
+- (void)onQuickInputBtnClicked:(id)sender {
+    if (standaloneQuickInput) {
+        [self onQuickInputSend:standaloneQuickInput];
+    }
+}
+
 - (void)onPopStandaloneWindowClicked:(id)sender {
     if (standalonePhoneWindow && [standalonePhoneWindow isVisible]) {
         [self restoreMainScreenControl];
@@ -953,7 +1067,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         NSView* container = [standalonePhoneWindow contentView];
         [screenView removeFromSuperview];
         NSRect cBounds = [container bounds];
-        [screenView setFrame:NSMakeRect(0, 48, cBounds.size.width, std::max((CGFloat)100.0, cBounds.size.height - 48))];
+        [screenView setFrame:NSMakeRect(0, 84, cBounds.size.width, std::max((CGFloat)100.0, cBounds.size.height - 84))];
         [screenView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
         [screenView setHidden:NO];
         [container addSubview:screenView];
@@ -1002,13 +1116,29 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
         NSView* container = [standalonePhoneWindow contentView];
 
-        // 底部 48 像素导航条 (做在控制屏幕中)
-        NSView* navBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 48)];
+        // 底部 84 像素综合控制栏 (快捷中文输入 + 导航三键)
+        NSView* navBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 84)];
         [navBar setAutoresizingMask:NSViewWidthSizable | NSViewMaxYMargin];
         [navBar setWantsLayer:YES];
         navBar.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.10 green:0.11 blue:0.13 alpha:1.0].CGColor;
 
-        NSButton* btnBack = [[NSButton alloc] initWithFrame:NSMakeRect(20, 8, 115, 32)];
+        // 快捷文本输入框 (支持中文输入法长句输入、粘贴内容，按 Enter 键即刻上屏发送)
+        standaloneQuickInput = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 48, 315, 26)];
+        [standaloneQuickInput setPlaceholderString:@"在此输入中文/英文或粘贴文本，按回车发送..."];
+        [standaloneQuickInput setTarget:self];
+        [standaloneQuickInput setAction:@selector(onQuickInputSend:)];
+        [standaloneQuickInput setAutoresizingMask:NSViewWidthSizable];
+        [navBar addSubview:standaloneQuickInput];
+
+        NSButton* btnSend = [[NSButton alloc] initWithFrame:NSMakeRect(335, 46, 70, 28)];
+        [btnSend setTitle:@"发送"];
+        [btnSend setBezelStyle:NSBezelStyleRounded];
+        [btnSend setTarget:self];
+        [btnSend setAction:@selector(onQuickInputBtnClicked:)];
+        [btnSend setAutoresizingMask:NSViewMinXMargin];
+        [navBar addSubview:btnSend];
+
+        NSButton* btnBack = [[NSButton alloc] initWithFrame:NSMakeRect(15, 8, 115, 32)];
         [btnBack setTitle:@"◀ 返回 (Back)"];
         [btnBack setBezelStyle:NSBezelStyleRounded];
         [btnBack setTarget:self];
