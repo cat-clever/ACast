@@ -31,7 +31,7 @@ public class ControlAccessibilityService extends AccessibilityService {
     // 常亮 Overlay 窗口 View
     private View keepScreenOnOverlayView;
 
-    // 连续手势引擎状态机 (支持真正持续不松手跟手滑动)
+    // 连续手势引擎状态机 (支持真正持续不松手跟手滑动与高速甩动翻页)
     private static volatile boolean isPointerDown = false;
     private static float downX = 0f;
     private static float downY = 0f;
@@ -41,8 +41,20 @@ public class ControlAccessibilityService extends AccessibilityService {
     private static float lastStrokeEndX = 0f;
     private static float lastStrokeEndY = 0f;
     private static boolean isDispatching = false;
+    private static boolean pendingFinalUp = false;
     private static GestureDescription.StrokeDescription currentStroke = null;
     private static boolean hasMoved = false;
+
+    // 触控防死锁看门狗：防止鼠标移出视窗或极端丢包导致手指在系统底层永远按住
+    private static final Runnable sWatchdogRunnable = () -> {
+        if (isPointerDown) {
+            Log.w(TAG, "⚠️ 触控安全看门狗超时触发，强制执行安全抬手！");
+            isPointerDown = false;
+            pendingFinalUp = false;
+            currentStroke = null;
+            isDispatching = false;
+        }
+    };
 
     @Override
     public void onServiceConnected() {
@@ -214,7 +226,7 @@ public class ControlAccessibilityService extends AccessibilityService {
 
     /**
      * 连续手势泵动循环：通过 willContinue = true / continueStroke 保持手指贴在屏幕上不抬起，
-     * 随着鼠标光标移动实时平滑滚动屏幕，彻底杜绝单段手势反复抬起引起的抖动抽搐！
+     * 随着鼠标光标移动实时平滑滚动屏幕；当松手时通过 willContinue = false 安全抬起。
      */
     private static synchronized void pumpContinuousGesture() {
         if (instance == null || isDispatching || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return;
@@ -238,6 +250,7 @@ public class ControlAccessibilityService extends AccessibilityService {
             if (instance == null) {
                 isDispatching = false;
                 currentStroke = null;
+                pendingFinalUp = false;
                 return;
             }
 
@@ -254,7 +267,7 @@ public class ControlAccessibilityService extends AccessibilityService {
                 lastStrokeEndY = targetY;
 
                 boolean willContinue = isPointerDown;
-                long dur = Math.max(35L, Math.min(80L, (long)(dist * 0.75)));
+                long dur = Math.max(30L, Math.min(75L, (long)(dist * 0.75)));
 
                 GestureDescription.Builder builder = new GestureDescription.Builder();
                 GestureDescription.StrokeDescription stroke;
@@ -276,6 +289,9 @@ public class ControlAccessibilityService extends AccessibilityService {
                         isDispatching = false;
                         if (isPointerDown) {
                             pumpContinuousGesture();
+                        } else if (pendingFinalUp || currentStroke != null) {
+                            pendingFinalUp = false;
+                            pumpContinuousGesture();
                         }
                     }
 
@@ -284,6 +300,7 @@ public class ControlAccessibilityService extends AccessibilityService {
                         super.onCancelled(gestureDescription);
                         isDispatching = false;
                         currentStroke = null;
+                        pendingFinalUp = false;
                         if (isPointerDown) {
                             pumpContinuousGesture();
                         }
@@ -294,12 +311,13 @@ public class ControlAccessibilityService extends AccessibilityService {
                 Log.w(TAG, "连续手势派发异常: " + t.getMessage());
                 isDispatching = false;
                 currentStroke = null;
+                pendingFinalUp = false;
             }
         });
     }
 
     /**
-     * 响应电脑端鼠标点击与拖拽滑动模拟触控（支持真正连续不松手跟手滑动）
+     * 响应电脑端鼠标点击与拖拽滑动模拟触控（支持真正连续不松手跟手滑动与高速甩动翻页）
      * @param action 0x10: DOWN, 0x11: MOVE, 0x12: UP
      * @param normX 归一化 X (0 ~ 10000)
      * @param normY 归一化 Y (0 ~ 10000)
@@ -317,6 +335,7 @@ public class ControlAccessibilityService extends AccessibilityService {
         if (action == 0x10) { // TOUCH_DOWN
             isPointerDown = true;
             hasMoved = false;
+            pendingFinalUp = false;
             downX = currentX;
             downY = currentY;
             currentTargetX = currentX;
@@ -327,6 +346,11 @@ public class ControlAccessibilityService extends AccessibilityService {
             currentStroke = null;
             isDispatching = false;
             wakeUpScreenIfNeeded();
+
+            // 超时防死锁看门狗：如果按下超过 2.5 秒未收到抬起且无位移，强制安全抬起
+            sMainHandler.removeCallbacks(sWatchdogRunnable);
+            sMainHandler.postDelayed(sWatchdogRunnable, 2500);
+
         } else if (action == 0x11) { // TOUCH_MOVE
             if (!isPointerDown) return;
             currentTargetX = currentX;
@@ -338,15 +362,24 @@ public class ControlAccessibilityService extends AccessibilityService {
                 hasMoved = true;
             }
 
+            // 重置看门狗
+            sMainHandler.removeCallbacks(sWatchdogRunnable);
+            sMainHandler.postDelayed(sWatchdogRunnable, 2500);
+
             if (hasMoved && !isDispatching) {
                 pumpContinuousGesture();
             }
+
         } else if (action == 0x12) { // TOUCH_UP
+            sMainHandler.removeCallbacks(sWatchdogRunnable);
             if (!isPointerDown) return;
             isPointerDown = false;
             long duration = System.currentTimeMillis() - downTimeMs;
             currentTargetX = currentX;
             currentTargetY = currentY;
+
+            float totalDx = currentX - downX;
+            float totalDy = currentY - downY;
 
             if (!hasMoved) {
                 // 纯点击 (Tap) 操作
@@ -357,7 +390,7 @@ public class ControlAccessibilityService extends AccessibilityService {
                         clickPath.moveTo(downX, downY);
                         clickPath.lineTo(downX + 1.0f, downY + 1.0f);
                         GestureDescription.Builder b = new GestureDescription.Builder();
-                        b.addStroke(new GestureDescription.StrokeDescription(clickPath, 0, Math.max(30L, Math.min(duration, 150L))));
+                        b.addStroke(new GestureDescription.StrokeDescription(clickPath, 0, Math.max(30L, Math.min(duration, 120L))));
                         instance.dispatchGesture(b.build(), null, null);
                     } catch (Throwable t) {
                         Log.w(TAG, "单击异常: " + t.getMessage());
@@ -365,10 +398,45 @@ public class ControlAccessibilityService extends AccessibilityService {
                 });
                 currentStroke = null;
                 isDispatching = false;
+                pendingFinalUp = false;
+
             } else {
-                // 滑动松手：若当前未在派发，泵送收尾段以优雅抬起手指；若正在派发，onCompleted 会完成收尾
-                if (!isDispatching) {
-                    pumpContinuousGesture();
+                // 滑动手势：
+                // 场景 A：快速甩动翻页（Fling/Swipe），位移明确（> 60px）且耗时较短（< 450ms），且此前尚未派发连续碎段
+                if (currentStroke == null && (Math.abs(totalDx) > 60.0f || Math.abs(totalDy) > 60.0f) && duration < 450L) {
+                    sMainHandler.post(() -> {
+                        if (instance == null) return;
+                        try {
+                            Path swipePath = new Path();
+                            swipePath.moveTo(downX, downY);
+                            // 针对快速左右滑动，适度延伸终点以赋予充足的翻页初速度
+                            float flingEndX = currentTargetX;
+                            float flingEndY = currentTargetY;
+                            if (Math.abs(totalDx) > Math.abs(totalDy)) {
+                                flingEndX += (totalDx > 0 ? 120.0f : -120.0f);
+                                flingEndX = Math.max(0.0f, Math.min(screenW, flingEndX));
+                            }
+                            swipePath.lineTo(flingEndX, flingEndY);
+
+                            GestureDescription.Builder b = new GestureDescription.Builder();
+                            b.addStroke(new GestureDescription.StrokeDescription(swipePath, 0, Math.max(50L, Math.min(duration, 150L))));
+                            instance.dispatchGesture(b.build(), null, null);
+                            Log.i(TAG, "✓ 触发高速划动翻页 (Fling): dx=" + totalDx + ", dur=" + duration);
+                        } catch (Throwable t) {
+                            Log.w(TAG, "Fling 滑动异常: " + t.getMessage());
+                        }
+                    });
+                    currentStroke = null;
+                    isDispatching = false;
+                    pendingFinalUp = false;
+
+                } else {
+                    // 场景 B：连续手势抬手收尾
+                    if (!isDispatching) {
+                        pumpContinuousGesture();
+                    } else {
+                        pendingFinalUp = true;
+                    }
                 }
             }
         }

@@ -52,7 +52,10 @@ public class ScreenCaptureService extends Service {
     private int cachedHeight = 1920;
     private int cachedDensity = 320;
     private BroadcastReceiver screenStateReceiver;
+    private boolean isMediaProjectionStopped = false;
 
+    private static int sResultCode = 0;
+    private static Intent sResultData = null;
     private static ScreenCaptureService sInstance;
 
     public static void requestKeyFrame() {
@@ -71,13 +74,51 @@ public class ScreenCaptureService extends Service {
     }
 
     /**
-     * 当屏幕点亮或解锁时，重新绑定 VirtualDisplay 并请求全量关键帧，根治锁屏黑屏
+     * 当屏幕点亮或解锁时，重新绑定 VirtualDisplay 并请求全量关键帧，根治锁屏黑屏与后台自杀
      */
     public static void onScreenUnlocked() {
         if (sInstance != null) {
-            sInstance.createOrResetVirtualDisplay();
-            requestKeyFrame();
+            sInstance.handleScreenUnlockedInternal();
         }
+    }
+
+    private synchronized void handleScreenUnlockedInternal() {
+        Log.i(TAG, "✓ 收到亮屏/解锁唤醒事件，检查前台投屏管线与 MediaProjection 状态...");
+
+        // 1. 若锁屏导致 MediaProjection 会话被系统挂起，使用缓存的授权凭证恢复 MediaProjection 实例
+        if ((mediaProjection == null || isMediaProjectionStopped) && sResultCode != 0 && sResultData != null) {
+            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (manager != null) {
+                try {
+                    mediaProjection = manager.getMediaProjection(sResultCode, sResultData);
+                    if (mediaProjection != null) {
+                        isMediaProjectionStopped = false;
+                        Log.i(TAG, "✓ 成功重新恢复 MediaProjection 投屏实例！");
+                        mediaProjection.registerCallback(new MediaProjection.Callback() {
+                            @Override
+                            public void onStop() {
+                                super.onStop();
+                                Log.w(TAG, "MediaProjection 停止回调触发 (系统息屏锁屏挂起，保持前台服务常驻保活，等待亮屏解锁恢复...)");
+                                isMediaProjectionStopped = true;
+                                if (virtualDisplay != null) {
+                                    try {
+                                        virtualDisplay.setSurface(null);
+                                        virtualDisplay.release();
+                                    } catch (Throwable ignored) {}
+                                    virtualDisplay = null;
+                                }
+                            }
+                        }, new Handler(Looper.getMainLooper()));
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "重新恢复 MediaProjection 异常: " + t.getMessage());
+                }
+            }
+        }
+
+        // 2. 重新绑定 VirtualDisplay 并强制下发关键帧
+        createOrResetVirtualDisplay();
+        requestKeyFrame();
     }
 
     public synchronized void createOrResetVirtualDisplay() {
@@ -209,6 +250,10 @@ public class ScreenCaptureService extends Service {
             int resultCode = intent.getIntExtra("resultCode", intent.getIntExtra("code", 0));
             Intent data = intent.getParcelableExtra("data");
             if (resultCode != 0 && data != null) {
+                sResultCode = resultCode;
+                sResultData = data;
+                isMediaProjectionStopped = false;
+
                 MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
                 if (manager != null) {
                     try {
@@ -233,13 +278,21 @@ public class ScreenCaptureService extends Service {
     private void startEncoding() {
         if (mediaProjection == null) return;
 
-        // Android 14 强制要求：在 createVirtualDisplay 前必须注册回调！
+        // Android 14+ 要求在 createVirtualDisplay 前注册回调
         mediaProjection.registerCallback(new MediaProjection.Callback() {
             @Override
             public void onStop() {
                 super.onStop();
-                Log.i(TAG, "MediaProjection 停止回调触发");
-                stopSelf();
+                Log.w(TAG, "MediaProjection 停止回调触发 (系统息屏锁屏挂起，保持前台服务常驻保活，等待亮屏解锁恢复...)");
+                isMediaProjectionStopped = true;
+                if (virtualDisplay != null) {
+                    try {
+                        virtualDisplay.setSurface(null);
+                        virtualDisplay.release();
+                    } catch (Throwable ignored) {}
+                    virtualDisplay = null;
+                }
+                // 切勿调用 stopSelf()！保持 Service 强保活状态
             }
         }, new Handler(Looper.getMainLooper()));
 

@@ -463,6 +463,9 @@ static NSString* SafeStr(const std::string& str) {
     std::vector<uint8_t> ppsData;
     NSRect lastAspectFitRect;
     std::chrono::steady_clock::time_point lastDragSendTime;
+    bool isMouseDown;
+    uint16_t lastSentNormX;
+    uint16_t lastSentNormY;
 
     NSMutableAttributedString* markedString;
     NSRange markedRange;
@@ -510,6 +513,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         formatDescription = NULL;
         lastAspectFitRect = NSZeroRect;
         lastDragSendTime = std::chrono::steady_clock::now();
+        isMouseDown = false;
+        lastSentNormX = 5000;
+        lastSentNormY = 5000;
         markedString = nil;
         markedRange = NSMakeRange(NSNotFound, 0);
         selectedRange = NSMakeRange(0, 0);
@@ -795,11 +801,20 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
 - (void)mouseDown:(NSEvent *)event {
     [[self window] makeFirstResponder:self];
+    isMouseDown = true;
     lastDragSendTime = std::chrono::steady_clock::now();
     [self sendNormalizedTouchWithEvent:event action:0]; // 0: DOWN (100% 立即发送)
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    // 关键防御：如果检测到左键实际已经松开（例如用户快速甩出视窗并在外部释放了鼠标按键）
+    if (([NSEvent pressedMouseButtons] & 1) == 0) {
+        if (isMouseDown) {
+            [self mouseUp:event];
+        }
+        return;
+    }
+
     // 鼠标拖拽高频限流防背压：限制最低发送间隔为 16ms (约 60Hz)，杜绝高刷鼠标将 UI 主线程和 Socket 缓冲区阻塞拥死
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDragSendTime).count();
@@ -811,7 +826,29 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)mouseUp:(NSEvent *)event {
+    isMouseDown = false;
     [self sendNormalizedTouchWithEvent:event action:2]; // 2: UP (100% 立即发送)
+}
+
+- (void)viewWillMoveToWindow:(NSWindow *)newWindow {
+    [super viewWillMoveToWindow:newWindow];
+    if (!newWindow && isMouseDown) {
+        [self safetyReleaseTouch];
+    }
+}
+
+- (BOOL)resignFirstResponder {
+    if (isMouseDown) {
+        [self safetyReleaseTouch];
+    }
+    return [super resignFirstResponder];
+}
+
+- (void)safetyReleaseTouch {
+    if (isMouseDown) {
+        isMouseDown = false;
+        acast::desktop::DesktopController::GetInstance().SendTouch(2, lastSentNormX, lastSentNormY);
+    }
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -832,6 +869,9 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
     uint16_t nx = (uint16_t)(normX * 10000.0f);
     uint16_t ny = (uint16_t)(normY * 10000.0f);
+
+    lastSentNormX = nx;
+    lastSentNormY = ny;
 
     acast::desktop::DesktopController::GetInstance().SendTouch(action, nx, ny);
 }
