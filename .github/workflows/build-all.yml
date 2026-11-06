@@ -81,7 +81,7 @@ jobs:
   # =========================================================================
   macos-universal:
     name: macOS Universal 控制端
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -130,9 +130,9 @@ jobs:
               <key>CFBundleDisplayName</key>
               <string>ACast</string>
               <key>CFBundleVersion</key>
-              <string>0.4.2</string>
+              <string>0.4.4</string>
               <key>CFBundleShortVersionString</key>
-              <string>0.4.2</string>
+              <string>0.4.4</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleSignature</key>
@@ -210,14 +210,14 @@ jobs:
   # =========================================================================
   ios-app:
     name: iOS 手机端 IPA (iOS 16+)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: 编译并打包 iOS 可签名 IPA (含 ReplayKit 扩展)
         run: |
           chmod +x scripts/build_ios_ipa.sh
-          ./scripts/build_ios_ipa.sh 0.4.2
+          ./scripts/build_ios_ipa.sh 0.4.4
 
       - name: 同时生成源码与扩展归档包
         run: |
