@@ -155,6 +155,7 @@ public class FastMirrorSender {
                     // 客户端单向保活 PING，无需并发往推流数据通道中回写 PONG，彻底杜绝视频流 NALU 数据被污染交错
                     Log.d(TAG, "FastMirror 收到保活心跳 PING");
                 } else if (msgType == MSG_TOUCH_DOWN || msgType == MSG_TOUCH_MOVE || msgType == MSG_TOUCH_UP) {
+                    ControlAccessibilityService.onUserActivityDetected();
                     if (payloadLen >= 5) {
                         ByteBuffer pb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
                         byte pointerId = pb.get();
@@ -164,6 +165,7 @@ public class FastMirrorSender {
                         ControlAccessibilityService.injectTouch(msgType, x & 0xFFFF, y & 0xFFFF);
                     }
                 } else if (msgType == MSG_KEY_DOWN || msgType == MSG_SYSTEM_KEY) {
+                    ControlAccessibilityService.onUserActivityDetected();
                     if (payloadLen >= 2) {
                         ByteBuffer pb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
                         short keyCode = pb.getShort();
@@ -174,6 +176,7 @@ public class FastMirrorSender {
                         ControlAccessibilityService.injectKey(keyCode);
                     }
                 } else if (msgType == MSG_TEXT_INPUT) {
+                    ControlAccessibilityService.onUserActivityDetected();
                     if (payloadLen > 0) {
                         String text = new String(payload, "UTF-8");
                         ControlAccessibilityService.injectText(text);

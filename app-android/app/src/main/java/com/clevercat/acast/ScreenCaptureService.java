@@ -59,9 +59,18 @@ public class ScreenCaptureService extends Service {
     private static int sResultCode = 0;
     private static Intent sResultData = null;
     private static ScreenCaptureService sInstance;
+    private static volatile boolean sIsAwaitingRestore = false;
 
     public static boolean isCapturing() {
         return sInstance != null && sInstance.isEncoding;
+    }
+
+    public static boolean isAwaitingRestore() {
+        return sIsAwaitingRestore;
+    }
+
+    public static void notifyAwaitingRestore(boolean awaiting) {
+        sIsAwaitingRestore = awaiting;
     }
 
     public static void requestKeyFrame() {
@@ -95,21 +104,87 @@ public class ScreenCaptureService extends Service {
     }
 
     private synchronized void handleScreenUnlockedInternal() {
-        Log.i(TAG, "✓ 收到亮屏/解锁唤醒事件，检查前台投屏管线与 VirtualDisplay 状态...");
+        Log.i(TAG, "✓ 收到亮屏/解锁唤醒事件，检查前台投屏管线与 VirtualDisplay 状态... (isMediaProjectionStopped=" + isMediaProjectionStopped + ", mediaProjection=" + mediaProjection + ")");
 
-        // 重点：Android 14+ 严格禁止单个 MediaProjection 重复创建 VirtualDisplay，
-        // 因此绝对不能主动 release 现存 VirtualDisplay 实例，只需确保绑定唤醒
+        // 1. 如果此前 MediaProjection 被系统在锁屏时切断并停止了
+        if (isMediaProjectionStopped || mediaProjection == null) {
+            // 阶段 1：尝试静默免授权恢复 (兼容 Android 13 及以下及部分定制系统)
+            boolean revived = trySilentRestoreMediaProjection();
+            if (revived) {
+                Log.i(TAG, "🎉 屏幕解锁：第一阶段静默恢复 MediaProjection 成功！画面秒级重连！");
+                requestKeyFrameDelayed();
+                return;
+            }
+
+            // 阶段 2 (Android 14+ / 15 单次令牌限制)：唤起极速透明恢复授权通道，若开启无障碍服务则自动秒级确认
+            Log.i(TAG, "⚡ 设备为 Android 14+ 单次安全令牌，发起快速授权恢复通道...");
+            promptRestoreProjection();
+            return;
+        }
+
+        // 2. 如果 MediaProjection 仍健康存活 (锁屏时仅 VirtualDisplay 处于 paused 状态)
         if (virtualDisplay != null && inputSurface != null) {
             try {
                 virtualDisplay.setSurface(inputSurface);
             } catch (Throwable ignored) {}
-            Log.i(TAG, "✓ 现有 VirtualDisplay 正常就绪，重新激活 Surface 映射");
+            Log.i(TAG, "✓ 现有 VirtualDisplay 正常就绪，重新激活 Surface 映射并请求关键帧");
         } else {
             createOrResetVirtualDisplay();
         }
 
-        // 连续下发 3 次关键帧请求，确保亮屏解锁后画面秒级恢复显示
         requestKeyFrameDelayed();
+    }
+
+    private boolean trySilentRestoreMediaProjection() {
+        if (sResultCode == 0 || sResultData == null) return false;
+        try {
+            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (manager == null) return false;
+            MediaProjection newProj = manager.getMediaProjection(sResultCode, (Intent) sResultData.clone());
+            if (newProj != null) {
+                this.mediaProjection = newProj;
+                this.isMediaProjectionStopped = false;
+                startEncoding();
+                return true;
+            }
+        } catch (Throwable t) {
+            Log.d(TAG, "静默恢复 MediaProjection 失败(通常因 Android 14+ 单次令牌限制): " + t.getMessage());
+        }
+        return false;
+    }
+
+    private void promptRestoreProjection() {
+        sIsAwaitingRestore = true;
+        CaptureRestoreActivity.start(this);
+    }
+
+    public static void restartProjectionWithConsent(Context context, int resultCode, Intent data) {
+        if (sInstance != null) {
+            sInstance.handleNewProjectionConsent(resultCode, data);
+        }
+    }
+
+    private synchronized void handleNewProjectionConsent(int resultCode, Intent data) {
+        sResultCode = resultCode;
+        sResultData = data;
+        isMediaProjectionStopped = false;
+        sIsAwaitingRestore = false;
+
+        MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        if (manager != null) {
+            try {
+                if (mediaProjection != null) {
+                    try { mediaProjection.stop(); } catch (Throwable ignored) {}
+                }
+                mediaProjection = manager.getMediaProjection(resultCode, data);
+                if (mediaProjection != null) {
+                    startEncoding();
+                    Log.i(TAG, "🎉 屏幕解锁重新授权成功，屏幕共享已瞬间恢复！");
+                }
+            } catch (Throwable t) {
+                Log.e(TAG, "重新配置 MediaProjection 异常: " + t.getMessage(), t);
+            }
+        }
     }
 
     public synchronized void createOrResetVirtualDisplay() {
@@ -295,7 +370,8 @@ public class ScreenCaptureService extends Service {
                     } catch (Throwable ignored) {}
                     virtualDisplay = null;
                 }
-                // 切勿调用 stopSelf()！保持 Service 强保活状态
+                mediaProjection = null;
+                // 切勿调用 stopSelf()！保持 Service 强保活状态，等待解锁后自动恢复管线
             }
         }, new Handler(Looper.getMainLooper()));
 

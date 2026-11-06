@@ -65,7 +65,72 @@ public class ControlAccessibilityService extends AccessibilityService {
     }
 
     @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {}
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event == null) return;
+
+        // 若处于锁屏唤醒重连等待阶段，自动辅助点击系统投屏授权弹窗中的“立即开始”或“允许”
+        if (ScreenCaptureService.isAwaitingRestore()) {
+            tryAutoConfirmMediaProjection();
+        }
+    }
+
+    private void tryAutoConfirmMediaProjection() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return;
+        try {
+            findAndClickConfirmButton(root);
+        } finally {
+            root.recycle();
+        }
+    }
+
+    private boolean findAndClickConfirmButton(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        CharSequence text = node.getText();
+        CharSequence desc = node.getContentDescription();
+        String str = (text != null ? text.toString() : "") + (desc != null ? desc.toString() : "");
+
+        if (!str.isEmpty() && (str.contains("立即开始") || str.contains("允许") || str.contains("Start now") || str.contains("Start Now") || str.contains("立即开启"))) {
+            if (node.isClickable()) {
+                boolean clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                Log.i(TAG, "✓ 无障碍服务已自动确认系统投屏授权: " + str + ", result=" + clicked);
+                return true;
+            }
+            AccessibilityNodeInfo parent = node.getParent();
+            while (parent != null) {
+                if (parent.isClickable()) {
+                    boolean clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    Log.i(TAG, "✓ 无障碍服务已点击父级授权按钮: " + str + ", result=" + clicked);
+                    parent.recycle();
+                    return true;
+                }
+                AccessibilityNodeInfo temp = parent.getParent();
+                parent.recycle();
+                parent = temp;
+            }
+        }
+
+        int childCount = node.getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                boolean found = findAndClickConfirmButton(child);
+                child.recycle();
+                if (found) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 当检测到电脑反控活跃事件时，重置系统息屏计时器
+     */
+    public static void onUserActivityDetected() {
+        if (instance == null) return;
+        try {
+            wakeUpScreenIfNeeded();
+        } catch (Throwable ignored) {}
+    }
 
     @Override
     public void onInterrupt() {}
