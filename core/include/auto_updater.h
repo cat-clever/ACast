@@ -15,9 +15,13 @@ struct UpdateInfo {
     std::string asset_name;
 };
 
+#ifndef ACAST_VERSION_STRING
+#define ACAST_VERSION_STRING "0.5.0"
+#endif
+
 class AutoUpdater {
 public:
-    static constexpr const char* CURRENT_VERSION = "0.4.7";
+    static constexpr const char* CURRENT_VERSION = ACAST_VERSION_STRING;
 
     // 检查 GitHub Releases 是否有新版本
     static UpdateInfo CheckForUpdate(const std::string& owner = "cat-clever", const std::string& repo = "ACast");

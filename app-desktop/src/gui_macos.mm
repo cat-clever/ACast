@@ -1697,7 +1697,13 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [contentView addSubview:titleLabel];
 
     NSTextField* versionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX + 250, 687, 100, 24)];
-    std::string verStr = std::string("v") + acast::updater::AutoUpdater::CURRENT_VERSION;
+    NSString* appVer = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    std::string verStr;
+    if (appVer && [appVer length] > 0) {
+        verStr = std::string("v") + [appVer UTF8String];
+    } else {
+        verStr = std::string("v") + acast::updater::AutoUpdater::CURRENT_VERSION;
+    }
     [versionLabel setStringValue:SafeStr(verStr)];
     [versionLabel setFont:[NSFont systemFontOfSize:12 weight:NSFontWeightMedium]];
     [versionLabel setTextColor:[NSColor secondaryLabelColor]];

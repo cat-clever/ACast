@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.15)
-project(ACast VERSION 0.4.9 LANGUAGES CXX)
+project(ACast VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 全局统一定义项目版本宏，彻底杜绝 C++ 控制端硬编码版本滞后问题
+add_compile_definitions(ACAST_VERSION_STRING="${PROJECT_VERSION}")
 
 # 全局强制 MSVC 使用 UTF-8 源码与执行字符集，彻底杜绝 Windows 界面乱码
 if(MSVC)
