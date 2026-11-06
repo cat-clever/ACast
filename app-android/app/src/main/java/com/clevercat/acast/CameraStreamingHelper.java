@@ -156,6 +156,25 @@ public class CameraStreamingHelper {
         format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1); // 每秒强制一个关键帧，秒开无延迟
 
+        // 采用 Baseline Profile (零 B 帧重排等待延迟，最高实时性与播放器兼容性)
+        try {
+            format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
+            format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4);
+        } catch (Throwable ignored) {}
+
+        // CBR 固定码率模式，杜绝网络传输速率大幅抖动引发的缓冲延迟
+        try {
+            format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
+        } catch (Throwable ignored) {}
+
+        // Android 11+ (API 30+) 启用硬件编码器底层 0 延迟管道模式
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                format.setInteger(MediaFormat.KEY_LATENCY, 0);
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0); // 实时编码最高优先级
+            } catch (Throwable ignored) {}
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
             format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 50_000); // 20fps 保活
         }
@@ -241,7 +260,7 @@ public class CameraStreamingHelper {
                             if (isConfig) {
                                 cachedSpsPps = outData;
                                 FastMirrorSender.getInstance().setCameraSpsPps(cachedSpsPps);
-                                LocalHttpTsServer.getInstance().setSpsPps(cachedSpsPps);
+                                LocalHttpTsServer.getInstance().getCameraChannel().setSpsPps(cachedSpsPps);
                             } else {
                                 byte[] payloadToSend = outData;
                                 if (isKeyFrame && cachedSpsPps != null && !containsSps(outData)) {
@@ -253,8 +272,8 @@ public class CameraStreamingHelper {
 
                                 // 通过 FastMirror MSG_CAMERA_FRAME 独立通道发送至 Mac 控制端
                                 FastMirrorSender.getInstance().sendCamera(payloadToSend, isKeyFrame, bufferInfo.presentationTimeUs);
-                                // 同步分发至局域网 TS 实时直播流，支持 OBS、VLC 等大屏直接拉取摄像头高清流
-                                LocalHttpTsServer.getInstance().pushVideo(payloadToSend, isKeyFrame, bufferInfo.presentationTimeUs);
+                                // 同步分发至局域网 TS 摄像头专属通道，彻底与屏幕投屏物理隔离
+                                LocalHttpTsServer.getInstance().getCameraChannel().pushVideo(payloadToSend, isKeyFrame, bufferInfo.presentationTimeUs);
                             }
                         }
                         videoCodec.releaseOutputBuffer(outputBufferIndex, false);
@@ -272,7 +291,7 @@ public class CameraStreamingHelper {
                             System.arraycopy(ppsData, 0, spsPps, spsData.length, ppsData.length);
                             cachedSpsPps = spsPps;
                             FastMirrorSender.getInstance().setCameraSpsPps(cachedSpsPps);
-                            LocalHttpTsServer.getInstance().setSpsPps(cachedSpsPps);
+                            LocalHttpTsServer.getInstance().getCameraChannel().setSpsPps(cachedSpsPps);
                         }
                     }
                 } catch (Throwable t) {
@@ -375,6 +394,8 @@ public class CameraStreamingHelper {
         }
 
         stopBackgroundThread();
+
+        LocalHttpTsServer.getInstance().getCameraChannel().reset();
 
         if (listener != null) {
             listener.onCameraStopped();

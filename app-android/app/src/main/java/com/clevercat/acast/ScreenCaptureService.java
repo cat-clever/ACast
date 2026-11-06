@@ -60,6 +60,10 @@ public class ScreenCaptureService extends Service {
     private static Intent sResultData = null;
     private static ScreenCaptureService sInstance;
 
+    public static boolean isCapturing() {
+        return sInstance != null && sInstance.isEncoding;
+    }
+
     public static void requestKeyFrame() {
         if (sInstance != null && sInstance.videoCodec != null && sInstance.isEncoding) {
             try {
@@ -406,15 +410,15 @@ public class ScreenCaptureService extends Service {
 
                         if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                             // 捕获编码器初始化的 SPS / PPS 配置信息并同步给 HLS 与 FastMirror
-                            LocalHttpTsServer.getInstance().setSpsPps(outData);
+                            LocalHttpTsServer.getInstance().getScreenChannel().setSpsPps(outData);
                             FastMirrorSender.getInstance().setSpsPps(outData);
                         } else {
                             boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
 
                             // 分发至自研 FastMirror 极速反控通道
                             FastMirrorSender.getInstance().sendVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
-                            // 分发至 DLNA 实时 TS 流
-                            LocalHttpTsServer.getInstance().pushVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
+                            // 分发至 DLNA 实时 TS 流 (屏幕专用独立通道，绝不与摄像头串流)
+                            LocalHttpTsServer.getInstance().getScreenChannel().pushVideo(outData, isKeyFrame, bufferInfo.presentationTimeUs);
                         }
                     }
                     videoCodec.releaseOutputBuffer(outputBufferIndex, false);
@@ -507,6 +511,7 @@ public class ScreenCaptureService extends Service {
 
         // 注意：FastMirrorSender 与 LocalHttpTsServer 属于全局网络通信管道，
         // 保持长驻，切勿随 ScreenCaptureService 销毁而暴力关闭，防止控制端断开连接。
+        LocalHttpTsServer.getInstance().getScreenChannel().reset();
     }
 
     @Nullable

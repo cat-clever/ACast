@@ -457,8 +457,7 @@ public class MainActivity extends AppCompatActivity {
                             btnToggleCamera.setTextColor(0xFFDC2626);
                             layoutCameraControls.setVisibility(View.VISIBLE);
                             cameraPreviewView.setVisibility(View.VISIBLE);
-                            tvStatus.setText("📷 Android 摄像头推流中 (" + w + "x" + h + " " + (isFront ? "前置" : "后置") + ") · Mac 虚拟摄像头已联动");
-                            tvStatus.setTextColor(0xFF0D9488);
+                            updateStatusUi();
                         });
                     }
 
@@ -587,22 +586,34 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateStatusUi() {
         String ip = getLocalIpAddress(this);
+        boolean isCamera = CameraStreamingHelper.getInstance().isStreaming();
+
         if (isCapturing) {
-            tvStatus.setText("✓ 投屏进行中 (本机 IP: " + ip + ")\n📡 实时音画流: http://" + ip + ":8088/live\n电脑控制端可自动发现直连，或点击下方设备连接");
-            tvStatus.setTextColor(0xFF16A34A); // 翠绿色
             btnToggleCapture.setText("⏹️ 停止投屏");
             btnToggleCapture.setBackgroundTintList(ColorStateList.valueOf(0xFFDC2626)); // 停止红
             if (tvDeviceHeader != null) {
                 tvDeviceHeader.setText("💻 目标设备 (电脑控制端 / 大屏电视)");
             }
         } else {
-            tvStatus.setText("● 本地推流服务就绪 (端口 8088 / 19999)\n📡 直播流地址: http://" + ip + ":8088/live\n点击下方按钮立即开启手机屏幕投屏");
-            tvStatus.setTextColor(0xFF2563EB); // 科技蓝
             btnToggleCapture.setText("🚀 开启屏幕投屏 (超低延迟)");
             btnToggleCapture.setBackgroundTintList(ColorStateList.valueOf(0xFF2563EB)); // 科技蓝
             if (tvDeviceHeader != null) {
                 tvDeviceHeader.setText("💻 目标设备 (⚠️ 请先开启上方投屏)");
             }
+        }
+
+        if (isCapturing && isCamera) {
+            tvStatus.setText("✓ 投屏与摄像头并发运行中 (双流物理独立隔离)\n📡 手机屏幕直播: http://" + ip + ":8088/screen\n📷 摄像头专属流: http://" + ip + ":8088/camera (OBS 推荐/毫秒级无串流)\n电脑控制端可自动反控，大屏直连就绪");
+            tvStatus.setTextColor(0xFF16A34A);
+        } else if (isCapturing) {
+            tvStatus.setText("✓ 投屏进行中 (本机 IP: " + ip + ")\n📡 手机屏幕直播流: http://" + ip + ":8088/screen (或 /live)\n电脑控制端可自动发现直连，或点击下方设备连接");
+            tvStatus.setTextColor(0xFF16A34A); // 翠绿色
+        } else if (isCamera) {
+            tvStatus.setText("📷 Android 摄像头推流中 (Mac 虚拟相机已联动)\n⚡ 专属超低延迟流 (OBS 推荐): http://" + ip + ":8088/camera\n📡 通用直播流地址: http://" + ip + ":8088/live\n已启用独立推流通道，绝不混入投屏画面！");
+            tvStatus.setTextColor(0xFF0D9488); // Teal 色
+        } else {
+            tvStatus.setText("● 本地推流服务就绪 (端口 8088 / 19999)\n📡 直播流地址: http://" + ip + ":8088/live\n点击下方按钮立即开启手机屏幕投屏");
+            tvStatus.setTextColor(0xFF2563EB); // 科技蓝
         }
     }
 
