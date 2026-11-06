@@ -85,8 +85,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: "配置 CMake (Universal 2: x86_64 + arm64)"
-        run: cmake -B build -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_BUILD_TYPE=Release
+      - name: "配置 CMake (Universal 2: x86_64 + arm64, 兼容 macOS 11.0+)"
+        run: cmake -B build -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0" -DCMAKE_BUILD_TYPE=Release
 
       - name: 构建 Universal 二进制
         run: cmake --build build --config Release --parallel
@@ -116,7 +116,10 @@ jobs:
           chmod +x dist-macos/ACast.app/Contents/MacOS/adb
           rm -rf pt_darwin.zip platform-tools
 
-          cat << 'EOF' > dist-macos/ACast.app/Contents/Info.plist
+          APP_VER="${GITHUB_REF_NAME#v}"
+          APP_VER="${APP_VER:-0.4.9}"
+
+          cat << EOF > dist-macos/ACast.app/Contents/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -130,9 +133,9 @@ jobs:
               <key>CFBundleDisplayName</key>
               <string>ACast</string>
               <key>CFBundleVersion</key>
-              <string>0.4.7</string>
+              <string>${APP_VER}</string>
               <key>CFBundleShortVersionString</key>
-              <string>0.4.7</string>
+              <string>${APP_VER}</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleSignature</key>

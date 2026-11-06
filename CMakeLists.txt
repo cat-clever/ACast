@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ACast VERSION 0.4.8 LANGUAGES CXX)
+project(ACast VERSION 0.4.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,8 +9,15 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# macOS 平台全局构建配置
 if(APPLE)
     enable_language(OBJCXX)
+    # 全局强制最低部署版本为 macOS 11.0 (Big Sur)，彻底根除 CI Runner 导致 minos=26.0 无法在用户 Mac 运行的严重问题
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment version" FORCE)
+    endif()
+    add_compile_options(-mmacosx-version-min=11.0)
+    add_link_options(-mmacosx-version-min=11.0)
 endif()
 
 # macOS Universal 2 架构支持
