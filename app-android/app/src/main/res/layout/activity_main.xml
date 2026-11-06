@@ -145,7 +145,7 @@
                     <!-- 主操作 2：启用/关闭 Android 摄像头 -->
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btn_toggle_camera"
-                        style="@style/Widget.MaterialComponents.Button.TonalButton"
+                        style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
                         android:layout_width="match_parent"
                         android:layout_height="50dp"
                         android:text="📷 启用 Android 摄像头 (Mac 虚拟摄像头)"
