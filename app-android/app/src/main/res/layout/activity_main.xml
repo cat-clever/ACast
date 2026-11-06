@@ -1,124 +1,335 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="20dp"
-    android:gravity="center_horizontal">
+    android:background="@color/color_background">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="ACast 手机投屏端"
-        android:textSize="22sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="12dp" />
-
-    <TextView
-        android:id="@+id/tv_status"
+    <androidx.core.widget.NestedScrollView
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/status_ready"
-        android:textColor="#4CAF50"
-        android:textSize="13sp"
-        android:gravity="center"
-        android:layout_marginBottom="16dp" />
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:scrollbars="vertical">
 
-    <Button
-        android:id="@+id/btn_toggle_capture"
-        android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:text="@string/btn_start_capture"
-        android:layout_marginBottom="8dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="18dp"
+            android:paddingBottom="36dp">
 
-    <Button
-        android:id="@+id/btn_toggle_camera"
-        android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:text="📷 启用 Android 摄像头 (Mac 虚拟摄像头)"
-        android:backgroundTint="#2196F3"
-        android:layout_marginBottom="8dp" />
+            <!-- ==================== 顶部品牌栏与版本信息 ==================== -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="16dp">
 
-    <LinearLayout
-        android:id="@+id/layout_camera_controls"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:visibility="gone"
-        android:gravity="center"
-        android:layout_marginBottom="8dp">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
 
-        <Button
-            android:id="@+id/btn_switch_camera"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:layout_height="44dp"
-            android:text="🔄 翻转"
-            android:layout_marginEnd="6dp" />
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
 
-        <Button
-            android:id="@+id/btn_toggle_torch"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:layout_height="44dp"
-            android:text="💡 补光灯"
-            android:layout_marginEnd="6dp" />
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="ACast"
+                            android:textColor="@color/color_text_primary"
+                            android:textSize="24sp"
+                            android:textStyle="bold"
+                            android:letterSpacing="-0.02" />
 
-        <Button
-            android:id="@+id/btn_camera_res"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:layout_height="44dp"
-            android:text="⚙️ 1080P" />
-    </LinearLayout>
+                        <TextView
+                            android:id="@+id/tv_app_version"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="v0.4.5"
+                            android:textColor="@color/color_primary"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:background="@drawable/bg_badge_pill"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:paddingTop="2dp"
+                            android:paddingBottom="2dp"
+                            android:layout_marginStart="8dp" />
+                    </LinearLayout>
 
-    <TextureView
-        android:id="@+id/camera_preview_view"
-        android:layout_width="160dp"
-        android:layout_height="100dp"
-        android:visibility="gone"
-        android:layout_marginBottom="8dp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="跨平台超低延迟无线投屏 · 电脑反控 · 虚拟摄像头"
+                        android:textColor="@color/color_text_secondary"
+                        android:textSize="12sp"
+                        android:layout_marginTop="2dp" />
+                </LinearLayout>
 
-    <Button
-        android:id="@+id/btn_accessibility"
-        android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:text="🖱️ 电脑鼠标反控：检测中..."
-        android:layout_marginBottom="8dp" />
+                <!-- 检查更新按钮 -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_check_update"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:text="检查更新"
+                    android:textSize="12sp"
+                    android:textColor="@color/color_primary"
+                    app:cornerRadius="19dp"
+                    app:strokeColor="@color/color_primary"
+                    app:strokeWidth="1dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp" />
+            </LinearLayout>
 
-    <Button
-        android:id="@+id/btn_keep_alive"
-        android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:text="🛡️ 后台保活与防杀：检测中..."
-        android:layout_marginBottom="8dp" />
+            <!-- ==================== 模块 1：核心投屏与推流控制台 ==================== -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="2dp"
+                app:strokeWidth="1dp"
+                app:strokeColor="@color/color_card_stroke"
+                app:cardBackgroundColor="@color/color_surface"
+                android:layout_marginBottom="14dp">
 
-    <Button
-        android:id="@+id/btn_scan_tv"
-        android:layout_width="match_parent"
-        android:layout_height="52dp"
-        android:text="@string/btn_scan_dlna"
-        android:layout_marginBottom="10dp" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
 
-    <Button
-        android:id="@+id/btn_check_update"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:text="检查并直接在线更新"
-        android:layout_marginBottom="16dp" />
+                    <!-- 动态状态卡片指示器 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="#F8FAFC"
+                        android:padding="12dp"
+                        android:layout_marginBottom="14dp">
 
-    <TextView
-        android:id="@+id/tv_device_header"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="3. 选择目标设备 (💻 电脑控制端 / 📺 大屏电视):"
-        android:textStyle="bold"
-        android:layout_marginBottom="8dp" />
+                        <TextView
+                            android:id="@+id/tv_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/status_ready"
+                            android:textColor="@color/color_text_secondary"
+                            android:textSize="13sp"
+                            android:lineSpacingExtra="3dp" />
+                    </LinearLayout>
 
-    <ListView
-        android:id="@+id/lv_devices"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+                    <!-- 主操作 1：开启/停止屏幕投屏 -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_toggle_capture"
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:text="@string/btn_start_capture"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/color_text_on_primary"
+                        app:backgroundTint="@color/color_primary"
+                        app:cornerRadius="27dp"
+                        android:layout_marginBottom="10dp" />
 
-</LinearLayout>
+                    <!-- 主操作 2：启用/关闭 Android 摄像头 -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_toggle_camera"
+                        style="@style/Widget.MaterialComponents.Button.TonalButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="50dp"
+                        android:text="📷 启用 Android 摄像头 (Mac 虚拟摄像头)"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="#0F766E"
+                        app:backgroundTint="#CCFBF1"
+                        app:cornerRadius="25dp"
+                        android:layout_marginBottom="8dp" />
+
+                    <!-- 摄像头展开控制条 -->
+                    <LinearLayout
+                        android:id="@+id/layout_camera_controls"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:visibility="gone"
+                        android:gravity="center"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginBottom="8dp">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_switch_camera"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="42dp"
+                            android:text="🔄 翻转"
+                            android:textSize="12sp"
+                            app:cornerRadius="21dp"
+                            android:layout_marginEnd="6dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_toggle_torch"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="42dp"
+                            android:text="💡 补光灯"
+                            android:textSize="12sp"
+                            app:cornerRadius="21dp"
+                            android:layout_marginEnd="6dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_camera_res"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="42dp"
+                            android:text="⚙️ 1080P"
+                            android:textSize="12sp"
+                            app:cornerRadius="21dp" />
+                    </LinearLayout>
+
+                    <!-- 摄像头实时微缩预览 -->
+                    <TextureView
+                        android:id="@+id/camera_preview_view"
+                        android:layout_width="match_parent"
+                        android:layout_height="140dp"
+                        android:visibility="gone"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginBottom="6dp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- ==================== 模块 2：系统守护与就绪状态 ==================== -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="2dp"
+                app:strokeWidth="1dp"
+                app:strokeColor="@color/color_card_stroke"
+                app:cardBackgroundColor="@color/color_surface"
+                android:layout_marginBottom="14dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="🛡️ 系统运行守护保障"
+                        android:textColor="@color/color_text_primary"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="12dp" />
+
+                    <!-- 电脑鼠标反控入口按键 -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_accessibility"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="🖱️ 电脑鼠标反控：检测中..."
+                        android:textSize="13sp"
+                        android:textColor="@color/color_text_primary"
+                        android:textAlignment="viewStart"
+                        app:strokeColor="@color/color_card_stroke"
+                        app:cornerRadius="14dp"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:layout_marginBottom="8dp" />
+
+                    <!-- 后台防杀白名单入口按键 -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_keep_alive"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="⚡ 后台防杀与电池保活：检测中..."
+                        android:textSize="13sp"
+                        android:textColor="@color/color_text_primary"
+                        android:textAlignment="viewStart"
+                        app:strokeColor="@color/color_card_stroke"
+                        app:cornerRadius="14dp"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- ==================== 模块 3：发现与直连目标设备 ==================== -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="2dp"
+                app:strokeWidth="1dp"
+                app:strokeColor="@color/color_card_stroke"
+                app:cardBackgroundColor="@color/color_surface">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:id="@+id/tv_device_header"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="💻 目标设备 (大屏 / 电脑)"
+                            android:textColor="@color/color_text_primary"
+                            android:textSize="15sp"
+                            android:textStyle="bold" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_scan_tv"
+                            style="@style/Widget.MaterialComponents.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="36dp"
+                            android:text="🔍 重新扫描"
+                            android:textSize="12sp"
+                            android:textColor="@color/color_primary"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp" />
+                    </LinearLayout>
+
+                    <!-- 设备列表 (嵌入卡片内) -->
+                    <ListView
+                        android:id="@+id/lv_devices"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:divider="@null"
+                        android:dividerHeight="0dp"
+                        android:nestedScrollingEnabled="false" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.media.projection.MediaProjectionManager;
 import android.net.wifi.WifiManager;
 import android.os.Build;
@@ -12,17 +13,24 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.ListAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import com.google.android.material.button.MaterialButton;
 
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -38,15 +46,15 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_PERMISSIONS_CODE = 2002;
     private static final int REQUEST_CAMERA_PERMISSION = 2003;
 
-    private Button btnToggleCapture;
-    private Button btnToggleCamera;
+    private MaterialButton btnToggleCapture;
+    private MaterialButton btnToggleCamera;
     private android.widget.LinearLayout layoutCameraControls;
     private Button btnSwitchCamera;
     private Button btnToggleTorch;
     private Button btnCameraRes;
     private android.view.TextureView cameraPreviewView;
-    private Button btnAccessibility;
-    private Button btnKeepAlive;
+    private MaterialButton btnAccessibility;
+    private MaterialButton btnKeepAlive;
     private Button btnScanDevices;
     private Button btnCheckUpdate;
     private TextView tvStatus;
@@ -94,6 +102,11 @@ public class MainActivity extends AppCompatActivity {
         tvDeviceHeader = findViewById(R.id.tv_device_header);
         lvDevices = findViewById(R.id.lv_devices);
 
+        TextView tvAppVersion = findViewById(R.id.tv_app_version);
+        if (tvAppVersion != null) {
+            tvAppVersion.setText("v" + BuildConfig.VERSION_NAME);
+        }
+
         // 点击无障碍按钮，一键直达系统无障碍设置开启反控
         btnAccessibility.setOnClickListener(v -> {
             try {
@@ -108,7 +121,59 @@ public class MainActivity extends AppCompatActivity {
         // 点击后台保活与防杀按钮，弹出保活指引与一键忽略电池优化授权
         btnKeepAlive.setOnClickListener(v -> KeepAliveHelper.showKeepAliveDialog(this, this::updateKeepAliveUi));
 
-        deviceAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, deviceList);
+        deviceAdapter = new ArrayAdapter<String>(this, R.layout.item_device, deviceList) {
+            @NonNull
+            @Override
+            public View getView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
+                View view = convertView;
+                if (view == null) {
+                    view = LayoutInflater.from(getContext()).inflate(R.layout.item_device, parent, false);
+                }
+                String item = getItem(position);
+                TextView tvIcon = view.findViewById(R.id.tv_device_icon);
+                TextView tvName = view.findViewById(R.id.tv_device_name);
+                TextView tvSub = view.findViewById(R.id.tv_device_sub);
+                TextView tvAction = view.findViewById(R.id.tv_device_action);
+
+                if (item != null) {
+                    if (item.startsWith("💻 ")) {
+                        tvIcon.setText("💻");
+                        String content = item.substring(2).trim();
+                        int lParen = content.lastIndexOf('(');
+                        int rParen = content.lastIndexOf(')');
+                        if (lParen != -1 && rParen != -1) {
+                            tvName.setText(content.substring(0, lParen).trim());
+                            tvSub.setText(content.substring(lParen + 1, rParen).trim() + " · 电脑控制端 (音画/反控就绪)");
+                        } else {
+                            tvName.setText(content);
+                            tvSub.setText("局域网电脑控制端");
+                        }
+                        tvAction.setText("直连");
+                        tvAction.setTextColor(0xFF2563EB);
+                    } else if (item.startsWith("📺 ")) {
+                        tvIcon.setText("📺");
+                        String content = item.substring(2).trim();
+                        int arrowIdx = content.lastIndexOf(" -> ");
+                        if (arrowIdx != -1) {
+                            tvName.setText(content.substring(0, arrowIdx).trim());
+                            tvSub.setText(content.substring(arrowIdx + 4).trim() + " · DLNA 大屏电视");
+                        } else {
+                            tvName.setText(content);
+                            tvSub.setText("DLNA 大屏设备");
+                        }
+                        tvAction.setText("投屏");
+                        tvAction.setTextColor(0xFFD97706);
+                    } else {
+                        tvIcon.setText("📱");
+                        tvName.setText(item);
+                        tvSub.setText("局域网设备");
+                        tvAction.setText("连接");
+                        tvAction.setTextColor(0xFF2563EB);
+                    }
+                }
+                return view;
+            }
+        };
         lvDevices.setAdapter(deviceAdapter);
 
         // 初始化界面状态
@@ -216,6 +281,27 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void adjustListViewHeight(ListView listView) {
+        if (listView == null) return;
+        ListAdapter listAdapter = listView.getAdapter();
+        if (listAdapter == null) return;
+        int totalHeight = 0;
+        int count = listAdapter.getCount();
+        int widthSpec = View.MeasureSpec.makeMeasureSpec(
+                listView.getWidth() > 0 ? listView.getWidth() : getResources().getDisplayMetrics().widthPixels,
+                View.MeasureSpec.AT_MOST);
+        int heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        for (int i = 0; i < count; i++) {
+            View listItem = listAdapter.getView(i, null, listView);
+            listItem.measure(widthSpec, heightSpec);
+            totalHeight += listItem.getMeasuredHeight();
+        }
+        ViewGroup.LayoutParams params = listView.getLayoutParams();
+        params.height = totalHeight + (listView.getDividerHeight() * Math.max(0, count - 1));
+        listView.setLayoutParams(params);
+        listView.requestLayout();
+    }
+
     private synchronized void refreshDeviceListUi() {
         deviceList.clear();
 
@@ -230,6 +316,9 @@ public class MainActivity extends AppCompatActivity {
         }
 
         deviceAdapter.notifyDataSetChanged();
+        if (lvDevices != null) {
+            lvDevices.post(() -> adjustListViewHeight(lvDevices));
+        }
     }
 
     private void handleDeviceClick(String selected) {
@@ -359,11 +448,12 @@ public class MainActivity extends AppCompatActivity {
                     public void onCameraStarted(int w, int h, boolean isFront) {
                         runOnUiThread(() -> {
                             btnToggleCamera.setText("⏹️ 关闭 Android 摄像头");
-                            btnToggleCamera.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFF44336)); // 红色
-                            layoutCameraControls.setVisibility(android.view.View.VISIBLE);
-                            cameraPreviewView.setVisibility(android.view.View.VISIBLE);
+                            btnToggleCamera.setBackgroundTintList(ColorStateList.valueOf(0xFFFEE2E2));
+                            btnToggleCamera.setTextColor(0xFFDC2626);
+                            layoutCameraControls.setVisibility(View.VISIBLE);
+                            cameraPreviewView.setVisibility(View.VISIBLE);
                             tvStatus.setText("📷 Android 摄像头推流中 (" + w + "x" + h + " " + (isFront ? "前置" : "后置") + ") · Mac 虚拟摄像头已联动");
-                            tvStatus.setTextColor(0xFF2196F3);
+                            tvStatus.setTextColor(0xFF0D9488);
                         });
                     }
 
@@ -371,9 +461,10 @@ public class MainActivity extends AppCompatActivity {
                     public void onCameraStopped() {
                         runOnUiThread(() -> {
                             btnToggleCamera.setText("📷 启用 Android 摄像头 (Mac 虚拟摄像头)");
-                            btnToggleCamera.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF2196F3)); // 蓝色
-                            layoutCameraControls.setVisibility(android.view.View.GONE);
-                            cameraPreviewView.setVisibility(android.view.View.GONE);
+                            btnToggleCamera.setBackgroundTintList(ColorStateList.valueOf(0xFFCCFBF1));
+                            btnToggleCamera.setTextColor(0xFF0F766E);
+                            layoutCameraControls.setVisibility(View.GONE);
+                            cameraPreviewView.setVisibility(View.GONE);
                             updateStatusUi();
                         });
                     }
@@ -444,7 +535,6 @@ public class MainActivity extends AppCompatActivity {
             }
 
             isCapturing = true;
-            btnToggleCapture.setText(R.string.btn_stop_capture);
             updateStatusUi();
 
             // 通知对等发现模块投屏已激活，立即广播
@@ -470,7 +560,6 @@ public class MainActivity extends AppCompatActivity {
 
         isCapturing = false;
         pendingTargetDevice = null;
-        btnToggleCapture.setText(R.string.btn_start_capture);
         PeerDiscoveryManager.getInstance().setCapturing(false);
         updateStatusUi();
     }
@@ -494,16 +583,20 @@ public class MainActivity extends AppCompatActivity {
     private void updateStatusUi() {
         String ip = getLocalIpAddress(this);
         if (isCapturing) {
-            tvStatus.setText("✓ 投屏进行中 (本机IP: " + ip + ")\n📡 实时直播流: http://" + ip + ":8088/live\n请选择下方控制端电脑直连，或点击大屏设备投屏");
-            tvStatus.setTextColor(0xFF2E7D32); // 绿色
+            tvStatus.setText("✓ 投屏进行中 (本机 IP: " + ip + ")\n📡 实时音画流: http://" + ip + ":8088/live\n电脑控制端可自动发现直连，或点击下方设备连接");
+            tvStatus.setTextColor(0xFF16A34A); // 翠绿色
+            btnToggleCapture.setText("⏹️ 停止投屏");
+            btnToggleCapture.setBackgroundTintList(ColorStateList.valueOf(0xFFDC2626)); // 停止红
             if (tvDeviceHeader != null) {
-                tvDeviceHeader.setText("3. 选择目标设备 (💻 电脑控制端 / 📺 大屏电视):");
+                tvDeviceHeader.setText("💻 目标设备 (电脑控制端 / 大屏电视)");
             }
         } else {
-            tvStatus.setText("● 本地推流服务已就绪 (端口 8088 / 19999)\n📡 直播流地址: http://" + ip + ":8088/live\n请点击【开启投屏】开始实时传输屏幕");
-            tvStatus.setTextColor(0xFFE65100); // 醒目橙色
+            tvStatus.setText("● 本地推流服务就绪 (端口 8088 / 19999)\n📡 直播流地址: http://" + ip + ":8088/live\n点击下方按钮立即开启手机屏幕投屏");
+            tvStatus.setTextColor(0xFF2563EB); // 科技蓝
+            btnToggleCapture.setText("🚀 开启屏幕投屏 (超低延迟)");
+            btnToggleCapture.setBackgroundTintList(ColorStateList.valueOf(0xFF2563EB)); // 科技蓝
             if (tvDeviceHeader != null) {
-                tvDeviceHeader.setText("3. 选择目标设备 (⚠️ 请先完成第1步开启投屏):");
+                tvDeviceHeader.setText("💻 目标设备 (⚠️ 请先开启上方投屏)");
             }
         }
     }
@@ -562,10 +655,12 @@ public class MainActivity extends AppCompatActivity {
         boolean isIgnoring = KeepAliveHelper.isIgnoringBatteryOptimizations(this);
         if (isIgnoring) {
             btnKeepAlive.setText("✓ 后台保活与防杀：已配置无限制 (锁屏防断连)");
-            btnKeepAlive.setTextColor(0xFF2E7D32); // 绿色
+            btnKeepAlive.setTextColor(0xFF16A34A); // 绿色
+            btnKeepAlive.setStrokeColor(ColorStateList.valueOf(0xFF86EFAC));
         } else {
-            btnKeepAlive.setText("⚠️ 后台保活与防杀：未开启白名单 (点击配置)");
-            btnKeepAlive.setTextColor(0xFFE65100); // 警示橙色
+            btnKeepAlive.setText("⚡ 后台保活与防杀：未开启白名单 (点击配置)");
+            btnKeepAlive.setTextColor(0xFFD97706); // 警示橙色
+            btnKeepAlive.setStrokeColor(ColorStateList.valueOf(0xFFFCD34D));
         }
     }
 
@@ -574,11 +669,13 @@ public class MainActivity extends AppCompatActivity {
         boolean enabled = ControlAccessibilityService.isAvailable() ||
                 ControlAccessibilityService.isAccessibilitySettingsOn(this);
         if (enabled) {
-            btnAccessibility.setText("✓ 电脑鼠标反控：已就绪 (支持鼠标点击/拖拽/打字)");
-            btnAccessibility.setTextColor(0xFF2E7D32); // 绿色
+            btnAccessibility.setText("✓ 电脑鼠标反控：已就绪 (支持鼠标/打字/触控)");
+            btnAccessibility.setTextColor(0xFF16A34A); // 绿色
+            btnAccessibility.setStrokeColor(ColorStateList.valueOf(0xFF86EFAC));
         } else {
-            btnAccessibility.setText("⚠️ 电脑鼠标反控：未开启 (点击开启无障碍权限)");
-            btnAccessibility.setTextColor(0xFFE65100); // 警示橙色
+            btnAccessibility.setText("🖱️ 电脑鼠标反控：未开启 (点击开启无障碍权限)");
+            btnAccessibility.setTextColor(0xFFD97706); // 警示橙色
+            btnAccessibility.setStrokeColor(ColorStateList.valueOf(0xFFFCD34D));
         }
     }
 

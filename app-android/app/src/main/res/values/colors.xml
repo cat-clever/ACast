@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 主题主色 (Royal Tech Blue) -->
+    <color name="color_primary">#2563EB</color>
+    <color name="color_primary_dark">#1D4ED8</color>
+    <color name="color_primary_light">#DBEAFE</color>
+
+    <!-- 强调辅助色 (Teal & Cyan) -->
+    <color name="color_secondary">#0D9488</color>
+    <color name="color_secondary_light">#CCFBF1</color>
+
+    <!-- 运行状态色 -->
+    <color name="color_success">#059669</color>
+    <color name="color_success_bg">#ECFDF5</color>
+    <color name="color_warning">#D97706</color>
+    <color name="color_warning_bg">#FFFBEB</color>
+    <color name="color_danger">#DC2626</color>
+    <color name="color_danger_bg">#FEF2F2</color>
+
+    <!-- 背景与卡片表面色 (Slate 调性) -->
+    <color name="color_background">#F8FAFC</color>
+    <color name="color_surface">#FFFFFF</color>
+    <color name="color_surface_elevated">#FFFFFF</color>
+    <color name="color_card_stroke">#E2E8F0</color>
+    <color name="color_card_stroke_active">#93C5FD</color>
+
+    <!-- 文字色彩层级 -->
+    <color name="color_text_primary">#0F172A</color>
+    <color name="color_text_secondary">#475569</color>
+    <color name="color_text_tertiary">#94A3B8</color>
+    <color name="color_text_on_primary">#FFFFFF</color>
+</resources>
+
