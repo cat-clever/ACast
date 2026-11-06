@@ -104,7 +104,12 @@ public class MainActivity extends AppCompatActivity {
 
         TextView tvAppVersion = findViewById(R.id.tv_app_version);
         if (tvAppVersion != null) {
-            tvAppVersion.setText("v" + BuildConfig.VERSION_NAME);
+            try {
+                String versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+                tvAppVersion.setText("v" + versionName);
+            } catch (Throwable ignored) {
+                tvAppVersion.setText("v0.4.5");
+            }
         }
 
         // 点击无障碍按钮，一键直达系统无障碍设置开启反控
