@@ -209,6 +209,31 @@ public class CameraStreamingHelper {
             previewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
             previewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
 
+            // 锁定 30 FPS 范围，防止暗光环境下帧率降低导致延迟积压
+            try {
+                CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraDevice.getId());
+                android.util.Range<Integer>[] fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+                if (fpsRanges != null) {
+                    android.util.Range<Integer> bestRange = null;
+                    for (android.util.Range<Integer> r : fpsRanges) {
+                        if (r.getUpper() == 30) {
+                            if (bestRange == null || r.getLower() > bestRange.getLower()) {
+                                bestRange = r;
+                            }
+                        }
+                    }
+                    if (bestRange != null) {
+                        previewRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestRange);
+                        Log.i(TAG, "锁定摄像头帧率范围: " + bestRange);
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+            // 关闭视频防抖（防抖会导致 Camera2 底层管道额外缓冲 3~5 帧引入多余延迟）
+            try {
+                previewRequestBuilder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF);
+            } catch (Throwable ignored) {}
+
             cameraDevice.createCaptureSession(outputSurfaces, new CameraCaptureSession.StateCallback() {
                 @Override
                 public void onConfigured(@NonNull CameraCaptureSession session) {

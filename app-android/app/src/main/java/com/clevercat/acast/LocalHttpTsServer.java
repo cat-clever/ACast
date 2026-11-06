@@ -100,6 +100,8 @@ public class LocalHttpTsServer {
         private int continuityPmt = 0;
         private int continuityVideo = 0;
         private byte[] cachedSpsPps = null;
+        private volatile long lastPts90k = 0;
+        private volatile long lastPtsMonoMs = 0;
 
         // GOP 秒开环形缓存 (缓存最近一个完整关键帧及其后续帧)
         private final List<byte[]> gopTsCache = Collections.synchronizedList(new ArrayList<>());
@@ -141,6 +143,10 @@ public class LocalHttpTsServer {
             if (naluData == null || naluData.length == 0) return;
             lastFrameTimestampMs = System.currentTimeMillis();
 
+            long pts90k = (ptsUs * 9) / 100;
+            lastPts90k = pts90k;
+            lastPtsMonoMs = android.os.SystemClock.elapsedRealtime();
+
             // 若为关键帧且当前 NALU 开头未携带 SPS，自动补齐头部 SPS/PPS
             byte[] payloadToSend = naluData;
             if (isKeyFrame && cachedSpsPps != null && !containsSps(naluData)) {
@@ -157,22 +163,16 @@ public class LocalHttpTsServer {
                 pmt = generatePmt();
             }
 
-            // 打包 PES -> TS
+            // 打包 PES -> TS (首包嵌入高精度 PCR，严格对齐播放器 STC 时钟)
             List<byte[]> tsPackets = packPesToTs(TS_PID_VIDEO, payloadToSend, ptsUs, true, isKeyFrame);
 
-            // 更新 GOP 秒开缓存
+            // 更新 I 帧秒开缓存 (仅缓存最新的关键帧与表结构，不积压后续 P 帧，防止新客户端播放历史滞后画面)
             if (isKeyFrame) {
                 synchronized (gopTsCache) {
                     gopTsCache.clear();
                     if (pat != null) gopTsCache.add(pat);
                     if (pmt != null) gopTsCache.add(pmt);
                     gopTsCache.addAll(tsPackets);
-                }
-            } else {
-                synchronized (gopTsCache) {
-                    if (gopTsCache.size() < MAX_GOP_CACHE_PACKETS) {
-                        gopTsCache.addAll(tsPackets);
-                    }
                 }
             }
 
@@ -200,7 +200,8 @@ public class LocalHttpTsServer {
                             continue;
                         }
                     }
-                    if (session.sendQueue.size() > 30) {
+                    // 深度严格限制为 5 帧 (~160ms)，若客户端读取延迟则主动丢弃旧帧，强行锚定实时边沿 (Live Edge)
+                    while (session.sendQueue.size() > 5) {
                         session.sendQueue.poll();
                     }
                     session.sendQueue.offer(frameBytes);
@@ -248,6 +249,7 @@ public class LocalHttpTsServer {
                         "Pragma: no-cache\r\n" +
                         "Expires: 0\r\n" +
                         "Access-Control-Allow-Origin: *\r\n" +
+                        "X-Accel-Buffering: no\r\n" +
                         "transferMode.dlna.org: Streaming\r\n" +
                         "contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n" +
                         "ext:\r\n\r\n";
@@ -256,8 +258,10 @@ public class LocalHttpTsServer {
 
                 if (isHead) return;
 
-                // 若为屏幕通道，尝试请求关键帧刷新
-                if ("screen".equals(name)) {
+                // 若为摄像头通道或屏幕通道，立即向硬件编码器请求全新关键帧，瞬间秒开且无历史滞后
+                if ("camera".equals(name)) {
+                    CameraStreamingHelper.requestKeyFrame();
+                } else if ("screen".equals(name)) {
                     ScreenCaptureService.requestKeyFrame();
                 }
 
@@ -553,7 +557,10 @@ public class LocalHttpTsServer {
             ts[4] = (byte) 183;
             ts[5] = 0x10;
 
-            long pts90k = (System.currentTimeMillis() * 90);
+            // 严密对齐视频帧的 PTS 单调时钟基准，绝不能使用 System.currentTimeMillis() 导致时钟跳变数万秒！
+            long nowMonoMs = android.os.SystemClock.elapsedRealtime();
+            long pts90k = (lastPts90k > 0) ? (lastPts90k + (nowMonoMs - lastPtsMonoMs) * 90) : (nowMonoMs * 90);
+
             ts[6] = (byte) ((pts90k >> 25) & 0xFF);
             ts[7] = (byte) ((pts90k >> 17) & 0xFF);
             ts[8] = (byte) ((pts90k >> 9) & 0xFF);
@@ -601,7 +608,8 @@ public class LocalHttpTsServer {
                 int headerLen = 4;
                 int remaining = pes.length - offset;
 
-                if (isFirst && isKeyFrame) {
+                // 首个 TS 分包必须携带 PCR 锁相时钟，确保播放器解码器 STC 始终与 PTS 严格锁相
+                if (isFirst) {
                     ts[3] |= 0x20;
                     ts[4] = 0x07;
                     ts[5] = 0x10;
@@ -762,8 +770,8 @@ public class LocalHttpTsServer {
                 targetChannel = screenChannel;
             } else {
                 // 默认 /live 或 /
-                // 智能感知：若摄像头正处于推流活跃状态，且屏幕未活跃，优先输出摄像头流
-                if (cameraChannel.isActivelyStreaming() && !screenChannel.isActivelyStreaming()) {
+                // 智能感知：若摄像头正处于推流活跃状态，优先输出摄像头流（用户打开摄像头时通常意在拉取摄像头画面）
+                if (cameraChannel.isActivelyStreaming()) {
                     targetChannel = cameraChannel;
                 } else {
                     targetChannel = screenChannel;

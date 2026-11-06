@@ -603,13 +603,13 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (isCapturing && isCamera) {
-            tvStatus.setText("✓ 投屏与摄像头并发运行中 (双流物理独立隔离)\n📡 手机屏幕直播: http://" + ip + ":8088/screen\n📷 摄像头专属流: http://" + ip + ":8088/camera (OBS 推荐/毫秒级无串流)\n电脑控制端可自动反控，大屏直连就绪");
+            tvStatus.setText("✓ 投屏与摄像头并发运行中 (双流物理独立隔离)\n📡 手机屏幕直播: http://" + ip + ":8088/screen\n📷 摄像头专属流: http://" + ip + ":8088/camera (OBS 50ms 超低延迟)\n电脑控制端可自动反控，大屏直连就绪");
             tvStatus.setTextColor(0xFF16A34A);
         } else if (isCapturing) {
             tvStatus.setText("✓ 投屏进行中 (本机 IP: " + ip + ")\n📡 手机屏幕直播流: http://" + ip + ":8088/screen (或 /live)\n电脑控制端可自动发现直连，或点击下方设备连接");
             tvStatus.setTextColor(0xFF16A34A); // 翠绿色
         } else if (isCamera) {
-            tvStatus.setText("📷 Android 摄像头推流中 (Mac 虚拟相机已联动)\n⚡ 专属超低延迟流 (OBS 推荐): http://" + ip + ":8088/camera\n📡 通用直播流地址: http://" + ip + ":8088/live\n已启用独立推流通道，绝不混入投屏画面！");
+            tvStatus.setText("📷 Android 摄像头推流中 (超低延迟 50ms 优化版)\n⚡ OBS 推荐专属流: http://" + ip + ":8088/camera\n📡 通用直播流地址: http://" + ip + ":8088/live\n💡 提示: OBS 媒体源关闭网络缓冲即可消除延迟！");
             tvStatus.setTextColor(0xFF0D9488); // Teal 色
         } else {
             tvStatus.setText("● 本地推流服务就绪 (端口 8088 / 19999)\n📡 直播流地址: http://" + ip + ":8088/live\n点击下方按钮立即开启手机屏幕投屏");
