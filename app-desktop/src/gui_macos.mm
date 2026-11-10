@@ -273,9 +273,71 @@ public:
         return result;
     }
 
+    void StartBroadcaster() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ConnectSinkLocked();
+        }
+        if (pump_running_.exchange(true)) return;
+        pump_thread_ = std::thread([this]() {
+            int retry_ticks = 0;
+            while (pump_running_.load()) {
+                usleep(33000); // 30 FPS 保活节拍
+                if (!pump_running_.load()) break;
+
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!is_connected_ || !queue_) {
+                    if (++retry_ticks >= 60) { // 每 2 秒自动尝试探测并接入系统相机扩展
+                        retry_ticks = 0;
+                        ConnectSinkLocked();
+                    }
+                    continue;
+                }
+
+                auto now = std::chrono::steady_clock::now();
+                auto sinceLastPushMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_push_time_).count();
+                if (sinceLastPushMs < 40) {
+                    // 实时视频流正在高频推送中，无需保活线程重复插帧
+                    continue;
+                }
+
+                CVPixelBufferRef bufToPush = NULL;
+                if (latest_live_buffer_) {
+                    auto sinceLiveSec = std::chrono::duration_cast<std::chrono::seconds>(now - last_live_frame_time_).count();
+                    if (sinceLiveSec < 15) {
+                        bufToPush = latest_live_buffer_;
+                    } else {
+                        CVPixelBufferRelease(latest_live_buffer_);
+                        latest_live_buffer_ = NULL;
+                    }
+                }
+                if (!bufToPush) {
+                    if (!standby_buffer_) {
+                        standby_buffer_ = CreateStandbyPixelBufferLocked(
+                            active_device_.targetWidth > 0 ? active_device_.targetWidth : 1920,
+                            active_device_.targetHeight > 0 ? active_device_.targetHeight : 1080);
+                    }
+                    bufToPush = standby_buffer_;
+                }
+
+                if (bufToPush) {
+                    PushPixelBufferToQueueLocked(bufToPush);
+                }
+            }
+        });
+    }
+
     bool ConnectSink() {
         std::lock_guard<std::mutex> lock(mutex_);
         return ConnectSinkLocked();
+    }
+
+    void ClearLiveFrame() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (latest_live_buffer_) {
+            CVPixelBufferRelease(latest_live_buffer_);
+            latest_live_buffer_ = NULL;
+        }
     }
 
     void SendFrame(CVImageBufferRef imageBuffer) {
@@ -286,65 +348,50 @@ public:
             if (!ConnectSinkLocked()) return;
         }
 
-        if (!queue_) return;
+        if (!queue_ || !target_pool_ || !transfer_session_) return;
 
         size_t srcW = CVPixelBufferGetWidth(imageBuffer);
         size_t srcH = CVPixelBufferGetHeight(imageBuffer);
         if (srcW == 0 || srcH == 0) return;
 
-        CVPixelBufferRef bufferToSend = imageBuffer;
-        bool needReleaseToSend = false;
+        int targetW = active_device_.targetWidth > 0 ? active_device_.targetWidth : 1920;
+        int targetH = active_device_.targetHeight > 0 ? active_device_.targetHeight : 1080;
 
-        int targetW = active_device_.targetWidth > 0 ? active_device_.targetWidth : (int)srcW;
-        int targetH = active_device_.targetHeight > 0 ? active_device_.targetHeight : (int)srcH;
+        // 必须始终从包含 kCVPixelBufferIOSurfacePropertiesKey 的 target_pool_ 分配缓冲，
+        // 否则 CoreMediaIO 跨进程 XPC 传输至 cmioextension 守护进程时会因无 IOSurface 映射而黑屏！
+        CVPixelBufferRef iosurfaceBuffer = NULL;
+        CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, target_pool_, &iosurfaceBuffer);
+        if (cvRet != kCVReturnSuccess || !iosurfaceBuffer) {
+            return;
+        }
 
-        if ((int)srcW != targetW || (int)srcH != targetH) {
-            if (target_pool_ && transfer_session_) {
-                CVPixelBufferRef scaledBuffer = NULL;
-                CVReturn cvRet = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, target_pool_, &scaledBuffer);
-                if (cvRet == kCVReturnSuccess && scaledBuffer) {
-                    VTPixelTransferSessionTransferImage(transfer_session_, imageBuffer, scaledBuffer);
-                    bufferToSend = scaledBuffer;
-                    needReleaseToSend = true;
-                }
+        // 若源图像宽高比与目标不同（例如竖屏手机投屏画面进入 16:9 虚拟摄像头），先清空背景为纯黑以配合 Letterbox 等比缩放
+        if (srcW * (size_t)targetH != srcH * (size_t)targetW) {
+            CVPixelBufferLockBaseAddress(iosurfaceBuffer, 0);
+            void* base = CVPixelBufferGetBaseAddress(iosurfaceBuffer);
+            size_t bpr = CVPixelBufferGetBytesPerRow(iosurfaceBuffer);
+            if (base && bpr > 0) {
+                memset(base, 0, bpr * (size_t)targetH);
             }
+            CVPixelBufferUnlockBaseAddress(iosurfaceBuffer, 0);
         }
 
-        CMVideoFormatDescriptionRef formatDesc = NULL;
-        OSStatus st = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, bufferToSend, &formatDesc);
-        if (st == noErr && formatDesc) {
-            CMSampleTimingInfo timing = {
-                .duration = CMTimeMake(1, 30),
-                .presentationTimeStamp = CMTimeMake(frame_index_++, 30),
-                .decodeTimeStamp = kCMTimeInvalid
-            };
-
-            CMSampleBufferRef sbuf = NULL;
-            st = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, bufferToSend, formatDesc, &timing, &sbuf);
-            if (st == noErr && sbuf) {
-                // 当队列满时，将最旧的未消费帧丢弃，并调用 CFRelease 释放队列占用的引用
-                while (CMSimpleQueueGetCount(queue_) >= CMSimpleQueueGetCapacity(queue_)) {
-                    const void* oldBuf = CMSimpleQueueDequeue(queue_);
-                    if (oldBuf) {
-                        CFRelease((CFTypeRef)oldBuf);
-                    }
-                }
-                // 入队：sbuf 的 +1 引用转移给队列持有人（即消费者消费完后释放）
-                OSStatus qErr = CMSimpleQueueEnqueue(queue_, sbuf);
-                if (qErr == noErr) {
-                    sent_frames_++;
-                    // 严禁在此调用 CFRelease(sbuf)！队列不自动 retain，所有权已由队列消费端持有
-                } else {
-                    // 入队失败，队列未接管，必须由我们释放
-                    CFRelease(sbuf);
-                }
-            }
-            CFRelease(formatDesc);
+        OSStatus trErr = VTPixelTransferSessionTransferImage(transfer_session_, imageBuffer, iosurfaceBuffer);
+        if (trErr != noErr) {
+            CVPixelBufferRelease(iosurfaceBuffer);
+            return;
         }
 
-        if (needReleaseToSend && bufferToSend) {
-            CVPixelBufferRelease(bufferToSend);
+        if (latest_live_buffer_) {
+            CVPixelBufferRelease(latest_live_buffer_);
         }
+        latest_live_buffer_ = CVPixelBufferRetain(iosurfaceBuffer);
+        last_live_frame_time_ = std::chrono::steady_clock::now();
+        last_push_time_ = last_live_frame_time_;
+        live_frames_++;
+
+        PushPixelBufferToQueueLocked(iosurfaceBuffer);
+        CVPixelBufferRelease(iosurfaceBuffer);
     }
 
     bool HasActiveSink() {
@@ -362,20 +409,29 @@ public:
         return sent_frames_.load();
     }
 
+    uint64_t GetLiveFrames() const {
+        return live_frames_.load();
+    }
+
     void Disconnect() {
+        pump_running_ = false;
+        if (pump_thread_.joinable()) {
+            pump_thread_.join();
+        }
         std::lock_guard<std::mutex> lock(mutex_);
+        if (latest_live_buffer_) {
+            CVPixelBufferRelease(latest_live_buffer_);
+            latest_live_buffer_ = NULL;
+        }
+        if (standby_buffer_) {
+            CVPixelBufferRelease(standby_buffer_);
+            standby_buffer_ = NULL;
+        }
         if (is_connected_) {
             if (active_device_.deviceId && active_device_.sinkStreamId) {
                 CMIODeviceStopStream(active_device_.deviceId, active_device_.sinkStreamId);
             }
             if (queue_) {
-                // 清理队列中尚未被消费的残余帧
-                while (CMSimpleQueueGetCount(queue_) > 0) {
-                    const void* buf = CMSimpleQueueDequeue(queue_);
-                    if (buf) {
-                        CFRelease((CFTypeRef)buf);
-                    }
-                }
                 CFRelease(queue_);
                 queue_ = NULL;
             }
@@ -398,6 +454,108 @@ public:
 
 private:
     static void DummyQueueAltered(CMIOStreamID streamID, void* token, void* refCon) {}
+
+    void PushPixelBufferToQueueLocked(CVPixelBufferRef bufferToSend) {
+        if (!queue_ || !bufferToSend) return;
+
+        CMVideoFormatDescriptionRef formatDesc = NULL;
+        OSStatus st = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, bufferToSend, &formatDesc);
+        if (st == noErr && formatDesc) {
+            CMSampleTimingInfo timing = kCMTimingInfoInvalid;
+            timing.duration = CMTimeMake(1, 30);
+            timing.presentationTimeStamp = CMClockGetTime(CMClockGetHostTimeClock());
+
+            CMSampleBufferRef sbuf = NULL;
+            st = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, bufferToSend, formatDesc, &timing, &sbuf);
+            if (st == noErr && sbuf) {
+                // 严格遵循 CoreMediaIO 单生产者/单消费者队列契约（与 OBS mac-virtualcam 一致）：
+                // 仅在队列未满时 Enqueue，绝不在生产端调用 Dequeue 破坏消费端指针
+                if (CMSimpleQueueGetCount(queue_) < CMSimpleQueueGetCapacity(queue_)) {
+                    OSStatus qErr = CMSimpleQueueEnqueue(queue_, sbuf);
+                    if (qErr == noErr) {
+                        sent_frames_++;
+                        full_queue_streak_ = 0;
+                    } else {
+                        CFRelease(sbuf);
+                    }
+                } else {
+                    CFRelease(sbuf);
+                    if (++full_queue_streak_ >= 60) {
+                        full_queue_streak_ = 0;
+                        CMIODeviceStartStream(active_device_.deviceId, active_device_.sinkStreamId);
+                    }
+                }
+            }
+            CFRelease(formatDesc);
+        }
+    }
+
+    CVPixelBufferRef CreateStandbyPixelBufferLocked(int width, int height) {
+        if (!target_pool_) return NULL;
+        CVPixelBufferRef pb = NULL;
+        if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, target_pool_, &pb) != kCVReturnSuccess || !pb) {
+            return NULL;
+        }
+
+        CVPixelBufferLockBaseAddress(pb, 0);
+        void* base = CVPixelBufferGetBaseAddress(pb);
+        size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pb);
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        uint32_t bitmapInfo = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
+
+        CGContextRef ctx = CGBitmapContextCreate(base, width, height, 8, bytesPerRow, colorSpace, bitmapInfo);
+        if (ctx) {
+            CGFloat w = (CGFloat)width;
+            CGFloat h = (CGFloat)height;
+
+            // 深色背景
+            CGContextSetRGBFillColor(ctx, 0.07, 0.09, 0.14, 1.0);
+            CGContextFillRect(ctx, CGRectMake(0, 0, w, h));
+
+            // 中心卡片
+            CGFloat cardW = 920;
+            CGFloat cardH = 320;
+            CGRect cardRect = CGRectMake((w - cardW) * 0.5, (h - cardH) * 0.5, cardW, cardH);
+            CGPathRef cardPath = CGPathCreateWithRoundedRect(cardRect, 24, 24, NULL);
+            CGContextSetRGBFillColor(ctx, 0.12, 0.15, 0.22, 0.96);
+            CGContextAddPath(ctx, cardPath);
+            CGContextFillPath(ctx);
+
+            CGContextSetRGBStrokeColor(ctx, 0.25, 0.52, 0.96, 0.85);
+            CGContextSetLineWidth(ctx, 3.0);
+            CGContextAddPath(ctx, cardPath);
+            CGContextStrokePath(ctx);
+            CGPathRelease(cardPath);
+
+            // 使用 NSGraphicsContext 绘制清晰文字说明
+            [NSGraphicsContext saveGraphicsState];
+            NSGraphicsContext* nsCtx = [NSGraphicsContext graphicsContextWithCGContext:ctx flipped:NO];
+            [NSGraphicsContext setCurrentContext:nsCtx];
+
+            NSMutableParagraphStyle* pStyle = [[NSMutableParagraphStyle alloc] init];
+            [pStyle setAlignment:NSTextAlignmentCenter];
+
+            NSDictionary* titleAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:40 weight:NSFontWeightBold],
+                NSForegroundColorAttributeName: [NSColor whiteColor],
+                NSParagraphStyleAttributeName: pStyle
+            };
+            [@"ACast 虚拟摄像头已就绪 (1080P 30FPS)" drawInRect:NSMakeRect(cardRect.origin.x + 30, cardRect.origin.y + 185, cardW - 60, 60) withAttributes:titleAttrs];
+
+            NSDictionary* subAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:24 weight:NSFontWeightMedium],
+                NSForegroundColorAttributeName: [NSColor colorWithCalibratedRed:0.65 green:0.78 blue:0.98 alpha:1.0],
+                NSParagraphStyleAttributeName: pStyle
+            };
+            [@"请在手机端开启【摄像头推流】或【屏幕共享】\n画面将实时直通至 Zoom / FaceTime / 腾讯会议" drawInRect:NSMakeRect(cardRect.origin.x + 30, cardRect.origin.y + 70, cardW - 60, 90) withAttributes:subAttrs];
+
+            [NSGraphicsContext restoreGraphicsState];
+            CGContextRelease(ctx);
+        }
+        CGColorSpaceRelease(colorSpace);
+        CVPixelBufferUnlockBaseAddress(pb, 0);
+        return pb;
+    }
 
     bool ConnectSinkLocked() {
         if (is_connected_ && queue_) return true;
@@ -427,9 +585,20 @@ private:
 
         queue_ = queue;
         is_connected_ = true;
-        frame_index_ = 0;
+        full_queue_streak_ = 0;
+        last_push_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(1);
 
-        InitTargetPool(active_device_.targetWidth, active_device_.targetHeight);
+        int w = active_device_.targetWidth > 0 ? active_device_.targetWidth : 1920;
+        int h = active_device_.targetHeight > 0 ? active_device_.targetHeight : 1080;
+        InitTargetPool(w, h);
+
+        if (standby_buffer_) {
+            CVPixelBufferRelease(standby_buffer_);
+        }
+        standby_buffer_ = CreateStandbyPixelBufferLocked(w, h);
+        if (standby_buffer_) {
+            PushPixelBufferToQueueLocked(standby_buffer_);
+        }
         return true;
     }
 
@@ -445,11 +614,16 @@ private:
         }
 
         VTPixelTransferSessionCreate(kCFAllocatorDefault, &transfer_session_);
+        if (transfer_session_) {
+            VTSessionSetProperty(transfer_session_, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Letterbox);
+        }
 
+        // 关键：必须包含 kCVPixelBufferIOSurfacePropertiesKey，否则跨进程 CMIO XPC 队列无法共享显存页面
         NSDictionary* pixelAttrs = @{
             (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
             (id)kCVPixelBufferWidthKey: @(width),
             (id)kCVPixelBufferHeightKey: @(height),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
             (id)kCVPixelBufferMetalCompatibilityKey: @YES,
             (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
             (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
@@ -466,8 +640,15 @@ private:
     CMSimpleQueueRef queue_ = NULL;
     VTPixelTransferSessionRef transfer_session_ = NULL;
     CVPixelBufferPoolRef target_pool_ = NULL;
-    int64_t frame_index_ = 0;
+    CVPixelBufferRef latest_live_buffer_ = NULL;
+    CVPixelBufferRef standby_buffer_ = NULL;
+    std::chrono::steady_clock::time_point last_live_frame_time_;
+    std::chrono::steady_clock::time_point last_push_time_;
+    int full_queue_streak_ = 0;
+    std::atomic<bool> pump_running_{false};
+    std::thread pump_thread_;
     std::atomic<uint64_t> sent_frames_{0};
+    std::atomic<uint64_t> live_frames_{0};
 };
 
 static NSString* SafeStr(const std::string& str) {
@@ -587,6 +768,8 @@ public:
 
                 NSDictionary* destinationImageBufferAttributes = @{
                     (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                    (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+                    (id)kCVPixelBufferMetalCompatibilityKey: @(YES),
                     (id)kCVPixelBufferOpenGLCompatibilityKey: @(YES)
                 };
 
@@ -839,14 +1022,12 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         if (cgImage != NULL) {
             [view deliverDecodedImage:cgImage];
         }
-        // 若当前未激活独立摄像头流，且虚拟相机已被用户接入使用时，才同步屏幕流作为备用源
+        // 若当前未激活独立摄像头流，则将屏幕投屏流同步至虚拟相机作为画面源
         if (!CameraStreamDecoder::GetInstance().HasActiveCameraStream()) {
             if (VirtualCameraRelay::GetInstance().HasClients()) {
                 VirtualCameraRelay::GetInstance().SendFrame(imageBuffer);
             }
-            if (CMIOVirtualCameraBroadcaster::GetInstance().HasActiveSink()) {
-                CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
-            }
+            CMIOVirtualCameraBroadcaster::GetInstance().SendFrame(imageBuffer);
         }
     } else if (status != noErr) {
         [view handleDecodeError:status];
@@ -1858,9 +2039,11 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 
     [contentView addSubview:cameraBox];
 
-    // 启动本地虚拟摄像头中继服务与自动尝试探测相机扩展
+    // 启动本地虚拟摄像头中继服务与 CoreMediaIO 1080P 30FPS 跨进程直通广播器
     VirtualCameraRelay::GetInstance().StartServer(19996);
+    CMIOVirtualCameraBroadcaster::GetInstance().StartBroadcaster();
     [self performSelector:@selector(onReloadCameraClicked:) withObject:nil afterDelay:0.2];
+    [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(refreshCameraStatusUI) userInfo:nil repeats:YES];
 
     // --- 4. 运行状态与事件日志视窗 ---
     NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 365, 200, 20)];
@@ -1943,6 +2126,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
                 [strongSelf->connectPhoneBtn setTitle:@"连接手机"];
                 [strongSelf restoreMainScreenControl];
                 [strongSelf->screenView clearFrame];
+                CMIOVirtualCameraBroadcaster::GetInstance().ClearLiveFrame();
             }
         });
     });
@@ -2187,18 +2371,33 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)onInstallCameraExtensionClicked:(id)sender {
+    CMIOVirtualCameraBroadcaster::GetInstance().ConnectSink();
+    bool hasActiveSink = CMIOVirtualCameraBroadcaster::GetInstance().HasActiveSink();
+    std::string sinkName = CMIOVirtualCameraBroadcaster::GetInstance().GetActiveSinkName();
+
     NSAlert* alert = [[NSAlert alloc] init];
     [alert setMessageText:@"macOS 虚拟摄像头使用指南"];
-    [alert setInformativeText:
-        @"在 Mac 上使用 Android 摄像头有两种可靠方案：\n\n"
-        @"【方案一：借助 OBS 虚拟摄像机（已安装 OBS 推荐）】\n"
-        @"由于 OBS Virtual Camera 限制必须由 OBS 进程主控调度。您只需在 OBS 中添加【窗口采集】（选择 ACast 手机画面）或【媒体源】(http://手机IP:8088/live)，然后点击 OBS 右下角【启动虚拟摄像机】即可在 Zoom/FaceTime 瞬间秒出画面，彻底告别黑屏！\n\n"
-        @"【方案二：激活 ACast 专属独立原生相机扩展】\n"
-        @"ACast 内置了完全独立的现代 CoreMediaIO 相机系统扩展。因开源构建未包含付费苹果开发者证书，只需在终端开启开发者扩展模式：\n"
-        @"  sudo systemextensionsctl developer on\n"
-        @"开启后点击“立即提交注册”，即可在系统设置中启用【ACast 虚拟摄像头】，在 Zoom/FaceTime 独立选用！"];
+    if (hasActiveSink) {
+        NSString* info = [NSString stringWithFormat:
+            @"✅ 当前状态：已成功绑定并直连系统相机扩展【%@】！\n\n"
+            @"• 您【无需】启动 OBS 软件，也【无需】关闭 macOS SIP。\n"
+            @"• ACast 已通过 macOS CoreMediaIO 底层 IOSurface 零拷贝通道直接驱动【%@】(1080P 30FPS)。\n"
+            @"• 现在直接打开 FaceTime、Zoom、腾讯会议、飞书或 QuickTime Player，在摄像头列表中选择【%@】，即可实时显示手机摄像头或投屏画面！\n\n"
+            @"（可选高级方案：若您希望在关闭 SIP 的开发机上额外注册独立的 ACastCameraExtension 系统扩展，可在终端执行 sudo systemextensionsctl developer on 后点击下方按钮提交注册）",
+            SafeStr(sinkName), SafeStr(sinkName), SafeStr(sinkName)];
+        [alert setInformativeText:info];
+    } else {
+        [alert setInformativeText:
+            @"在 macOS 上启用虚拟摄像头有两种方式：\n\n"
+            @"【方式一：免关 SIP 零配置直通（强烈推荐）】\n"
+            @"安装免费开源的 OBS Studio 并在【系统设置 > 通用 > 登录项与扩展 > 相机扩展】中开启 OBS 相机扩展。ACast 会通过 CoreMediaIO 底层通道直接接管并推送 1080P 30FPS 画面（平时完全不需要打开 OBS 软件）！\n\n"
+            @"【方式二：激活 ACast 独立原生相机扩展（需关闭 SIP）】\n"
+            @"因开源构建未包含付费 Apple 开发者证书，若需注册内置的 ACastCameraExtension，需在恢复模式关闭 SIP 后执行：\n"
+            @"  sudo systemextensionsctl developer on\n"
+            @"随后点击“提交注册 ACast 扩展”。"];
+    }
     [alert addButtonWithTitle:@"知道了"];
-    [alert addButtonWithTitle:@"立即提交注册 ACast 扩展"];
+    [alert addButtonWithTitle:@"提交注册 ACast 扩展"];
     [alert addButtonWithTitle:@"复制开发者命令"];
 
     NSModalResponse resp = [alert runModal];
@@ -2223,37 +2422,63 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     }
 }
 
+- (void)refreshCameraStatusUI {
+    bool isConnected = CMIOVirtualCameraBroadcaster::GetInstance().HasActiveSink();
+    std::string activeName = CMIOVirtualCameraBroadcaster::GetInstance().GetActiveSinkName();
+    bool hasClients = VirtualCameraRelay::GetInstance().HasClients();
+    uint64_t liveFrames = CMIOVirtualCameraBroadcaster::GetInstance().GetLiveFrames();
+
+    if (isConnected && !activeName.empty()) {
+        NSString* statusText = nil;
+        if (liveFrames > 0) {
+            statusText = [NSString stringWithFormat:@"扩展状态: 🟢 正在实时推流至 [%@] (手机画面已推送 %llu 帧)", SafeStr(activeName), liveFrames];
+        } else {
+            statusText = [NSString stringWithFormat:@"扩展状态: 🟢 已绑定并激活 [%@] (30FPS 就绪，可在 Zoom / FaceTime 直接选用)", SafeStr(activeName)];
+        }
+        [cameraStatusLabel setStringValue:statusText];
+        [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
+    } else if (hasClients) {
+        [cameraStatusLabel setStringValue:@"扩展状态: 🟢 正在向 ACast 独立相机扩展推流中 (30 FPS)"];
+        [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
+    }
+}
+
 - (void)onReloadCameraClicked:(id)sender {
-    acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 正在检测当前 Mac 系统的相机扩展 (Camera Extensions) 状态...");
+    acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 正在检测并绑定当前 Mac 系统的相机扩展 (Camera Extensions)...");
+    CMIOVirtualCameraBroadcaster::GetInstance().StartBroadcaster();
     auto devices = CMIOVirtualCameraBroadcaster::GetInstance().ScanAvailableSinkDevices();
+    bool isConnected = CMIOVirtualCameraBroadcaster::GetInstance().HasActiveSink();
+    std::string activeName = CMIOVirtualCameraBroadcaster::GetInstance().GetActiveSinkName();
     bool hasClients = VirtualCameraRelay::GetInstance().HasClients();
     uint64_t sentFrames = CMIOVirtualCameraBroadcaster::GetInstance().GetSentFrames();
+    uint64_t liveFrames = CMIOVirtualCameraBroadcaster::GetInstance().GetLiveFrames();
 
-    if (!devices.empty()) {
-        std::string devNames;
+    if (isConnected && !activeName.empty()) {
         for (size_t i = 0; i < devices.size(); ++i) {
-            if (i > 0) devNames += ", ";
-            devNames += devices[i].name;
             NSString* logMsg = [NSString stringWithFormat:@"[相机扩展] 发现已就绪相机扩展 [%zu]: 名称='%@', UID='%@', 分辨率=%dx%d", 
                 i + 1, SafeStr(devices[i].name), SafeStr(devices[i].uid), devices[i].targetWidth, devices[i].targetHeight];
             acast::desktop::DesktopController::GetInstance().Log(logMsg.UTF8String);
         }
 
-        NSString* statusText = [NSString stringWithFormat:@"扩展状态: ✓ 已接入系统相机扩展 [%@] (可在 FaceTime / Zoom 直接选用)", SafeStr(devices[0].name)];
-        if (sentFrames > 0) {
-            statusText = [NSString stringWithFormat:@"扩展状态: 🟢 正在推流至 [%@] (已推送 %llu 帧)", SafeStr(devices[0].name), sentFrames];
+        NSString* statusText = nil;
+        if (liveFrames > 0) {
+            statusText = [NSString stringWithFormat:@"扩展状态: 🟢 正在实时推流至 [%@] (手机画面已推送 %llu 帧)", SafeStr(activeName), liveFrames];
+        } else {
+            statusText = [NSString stringWithFormat:@"扩展状态: 🟢 已绑定并激活 [%@] (30FPS 就绪，可在 Zoom / FaceTime 直接选用)", SafeStr(activeName)];
         }
         [cameraStatusLabel setStringValue:statusText];
         [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
-        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查完毕: 系统虚拟相机直通链路正常，可在 Zoom / FaceTime / 腾讯会议等软件中直接选用。");
+        NSString* okLog = [NSString stringWithFormat:@"[相机扩展] ✓ 已成功绑定系统虚拟相机 [%@] (累计发送 %llu 帧)，无需开启 OBS，直接在 Zoom / FaceTime / 腾讯会议中选择【%@】即可使用！",
+            SafeStr(activeName), sentFrames, SafeStr(activeName)];
+        acast::desktop::DesktopController::GetInstance().Log(okLog.UTF8String);
     } else if (hasClients) {
-        [cameraStatusLabel setStringValue:@"扩展状态: 正在向独立客户端推流中 (30 FPS)"];
+        [cameraStatusLabel setStringValue:@"扩展状态: 🟢 正在向 ACast 独立相机扩展推流中 (30 FPS)"];
         [cameraStatusLabel setTextColor:[NSColor systemGreenColor]];
-        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查: 检测到独立相机扩展客户端已连接。");
+        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查: 检测到 ACast 独立相机扩展客户端已连接。");
     } else {
-        [cameraStatusLabel setStringValue:@"扩展状态: 未检测到已激活的相机扩展 (请安装 OBS 虚拟相机或按指引配置独立扩展)"];
+        [cameraStatusLabel setStringValue:@"扩展状态: 未检测到已激活的相机扩展 (请点击左侧安装指引配置)"];
         [cameraStatusLabel setTextColor:[NSColor systemOrangeColor]];
-        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查: 未检测到系统相机扩展。推荐安装 OBS Studio 或在终端开启 developer 模式。");
+        acast::desktop::DesktopController::GetInstance().Log("[相机扩展] 状态检查: 未检测到已激活的系统相机扩展。请点击【相机扩展安装指引】查看配置步骤。");
     }
 }
 

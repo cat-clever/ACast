@@ -117,7 +117,7 @@ jobs:
           rm -rf pt_darwin.zip platform-tools
 
           APP_VER="${GITHUB_REF_NAME#v}"
-          APP_VER="${APP_VER:-0.5.0}"
+          APP_VER="${APP_VER:-0.5.1}"
 
           cat << EOF > dist-macos/ACast.app/Contents/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>

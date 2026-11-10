@@ -249,6 +249,7 @@ class ACastCameraStreamSource: NSObject, CMIOExtensionStreamSource {
     private func generateStandbyPixelBuffer(width: Int, height: Int) -> CVPixelBuffer? {
         var pb: CVPixelBuffer?
         let attrs: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true
         ]
@@ -368,14 +369,19 @@ class ACastCameraStreamSource: NSObject, CMIOExtensionStreamSource {
             var payload = [UInt8](repeating: 0, count: len)
             if !readExact(fd: fd, buf: &payload, length: len) { break }
 
-            // 将收到的 BGRA 像素封装为 CVPixelBuffer
+            // 将收到的 BGRA 像素封装为 IOSurface 支持的 CVPixelBuffer
             var newPb: CVPixelBuffer?
+            let liveAttrs: [CFString: Any] = [
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+                kCVPixelBufferCGImageCompatibilityKey: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey: true
+            ]
             let pbRes = CVPixelBufferCreate(
                 kCFAllocatorDefault,
                 w,
                 h,
                 kCVPixelFormatType_32BGRA,
-                nil,
+                liveAttrs as CFDictionary,
                 &newPb
             )
             if pbRes == noErr, let buffer = newPb {
