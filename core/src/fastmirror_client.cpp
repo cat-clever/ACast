@@ -138,6 +138,20 @@ void FastMirrorClient::ReverseServerLoop(uint16_t listen_port) {
         inet_ntop(AF_INET, &client_addr.sin_addr, ip_buf, sizeof(ip_buf));
         std::string remote_ip(ip_buf);
 
+        // 仅当控制端用户主动发起对该手机 IP 的连接（或收到手机主动点击直连请求）时，才接纳反向直连；
+        // 拒绝后台静默自动重连，确保扫描到的手机只显示在列表中，由用户点击“连接手机”才建立连接。
+        bool allow_adopt = false;
+        {
+            std::lock_guard<std::mutex> lock(conn_mutex_);
+            if (!pending_connect_ip_.empty() && pending_connect_ip_ == remote_ip && !is_connected_) {
+                allow_adopt = true;
+            }
+        }
+        if (!allow_adopt) {
+            CLOSE_SOCKET(client_sock);
+            continue;
+        }
+
         AdoptSocket(client_sock, remote_ip, listen_port);
     }
 
@@ -168,6 +182,7 @@ void FastMirrorClient::AdoptSocket(int sock, const std::string& ip, uint16_t por
 
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
+        pending_connect_ip_.clear();
         active_sockets_.push_back(sock);
         socket_fd_ = sock;
         connected_ip_ = ip;
@@ -314,6 +329,11 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
         return false;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        pending_connect_ip_ = ip;
+    }
+
     // Happy Eyeballs 阶梯式并发 TCP SYN 探测 + UDP 射频唤醒：
     // 解决 macOS 热点 (bridge100) / 路由器下 iPhone 处于 802.11 PSM 节能休眠导致首包 SYN 被丢弃并陷入秒级退避的问题
     std::vector<int> candidates;
@@ -397,6 +417,12 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
     }
 
     if (winner_sock < 0) {
+        {
+            std::lock_guard<std::mutex> lock(conn_mutex_);
+            if (connect_epoch_.load() == my_epoch) {
+                pending_connect_ip_.clear();
+            }
+        }
         return is_connected_.load();
     }
 
@@ -409,6 +435,7 @@ void FastMirrorClient::Disconnect() {
     std::vector<int> to_close;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
+        pending_connect_ip_.clear();
         is_connected_ = false;
         stop_heartbeat_ = true;
         socket_fd_ = -1;

@@ -308,11 +308,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_ACAST_LOG: {
         std::string* pStr = reinterpret_cast<std::string*>(lParam);
         if (pStr && g_hEditLog) {
+            DWORD selStart = 0, selEnd = 0;
+            SendMessageW(g_hEditLog, EM_GETSEL, (WPARAM)&selStart, (LPARAM)&selEnd);
+            bool hasSelection = (selEnd > selStart);
             std::wstring line = Utf8ToWide(*pStr + "\r\n");
             int len = GetWindowTextLengthW(g_hEditLog);
             SendMessageW(g_hEditLog, EM_SETSEL, (WPARAM)len, (LPARAM)len);
             SendMessageW(g_hEditLog, EM_REPLACESEL, FALSE, (LPARAM)line.c_str());
-            SendMessageW(g_hEditLog, WM_VSCROLL, SB_BOTTOM, 0);
+            if (hasSelection) {
+                SendMessageW(g_hEditLog, EM_SETSEL, (WPARAM)selStart, (LPARAM)selEnd);
+            } else {
+                SendMessageW(g_hEditLog, WM_VSCROLL, SB_BOTTOM, 0);
+            }
             delete pStr;
         }
         break;

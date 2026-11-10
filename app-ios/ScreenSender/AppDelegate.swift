@@ -427,7 +427,6 @@ final class FastMirrorServer {
 
         startTcpAcceptorThread()
         startLoopbackBridgeThread()
-        startAutoReverseConnectThread()
     }
 
     func connectToDesktop(ip: String, port: UInt16 = 19990) {
@@ -1054,14 +1053,12 @@ final class IOSPeerDiscovery {
             let snapshot = desktops
             lock.unlock()
 
-            // 收到电脑信标时，立即单播回送一次手机信标，并主动反向直连电脑 19990 端口
+            // 收到电脑信标时，立即单播回送一次手机信标，使手机像 Android 一样实时显示在电脑设备列表中（仅在用户点击连接时才建立连接）
             if !info.ip.isEmpty {
                 let name = deviceDisplayName()
                 let reply = "{\"cmd\":\"phone_beacon\",\"device_name\":\"\(name)\",\"ip\":\"\(info.ip)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
                 sendUdpUnicast(reply, targetIp: ip, port: discoveryPort)
             }
-            let tcpPort = UInt16((json["tcp_port"] as? Int) ?? 19990)
-            FastMirrorServer.shared.connectToDesktop(ip: ip, port: tcpPort)
 
             if changed {
                 DispatchQueue.main.async { [weak self] in
@@ -1081,7 +1078,6 @@ final class IOSPeerDiscovery {
                 let name = deviceDisplayName()
                 let reply = "{\"cmd\":\"phone_beacon\",\"device_name\":\"\(name)\",\"ip\":\"\(info.ip)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
                 sendUdpUnicast(reply, targetIp: remoteIp, port: discoveryPort)
-                FastMirrorServer.shared.connectToDesktop(ip: remoteIp, port: 19990)
             }
         }
     }

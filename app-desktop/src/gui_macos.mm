@@ -2046,13 +2046,20 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(refreshCameraStatusUI) userInfo:nil repeats:YES];
 
     // --- 4. 运行状态与事件日志视窗 ---
-    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 365, 200, 20)];
-    [logTitle setStringValue:@"📋 运行状态与事件日志"];
+    NSTextField* logTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 365, 260, 20)];
+    [logTitle setStringValue:@"📋 运行状态与事件日志 (支持多选与 Cmd+C)"];
     [logTitle setFont:[NSFont systemFontOfSize:13 weight:NSFontWeightBold]];
     [logTitle setBezeled:NO];
     [logTitle setDrawsBackground:NO];
     [logTitle setEditable:NO];
     [contentView addSubview:logTitle];
+
+    NSButton* copyLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(rightX + rightW - 180, 362, 90, 26)];
+    [copyLogBtn setTitle:@"复制日志"];
+    [copyLogBtn setBezelStyle:NSBezelStyleRounded];
+    [copyLogBtn setTarget:self];
+    [copyLogBtn setAction:@selector(onCopyLogClicked:)];
+    [contentView addSubview:copyLogBtn];
 
     NSButton* clearLogBtn = [[NSButton alloc] initWithFrame:NSMakeRect(rightX + rightW - 85, 362, 85, 26)];
     [clearLogBtn setTitle:@"清空"];
@@ -2066,12 +2073,21 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     [logScrollView setBorderType:NSBezelBorder];
     [logScrollView setAutoresizingMask:NSViewHeightSizable];
 
-    logTextView = [[NSTextView alloc] initWithFrame:[logScrollView bounds]];
+    NSSize logContentSize = [logScrollView contentSize];
+    logTextView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, logContentSize.width, logContentSize.height)];
+    [logTextView setMinSize:NSMakeSize(0.0, logContentSize.height)];
+    [logTextView setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
+    [logTextView setVerticallyResizable:YES];
+    [logTextView setHorizontallyResizable:NO];
+    [logTextView setAutoresizingMask:NSViewWidthSizable];
+    [[logTextView textContainer] setContainerSize:NSMakeSize(logContentSize.width, FLT_MAX)];
+    [[logTextView textContainer] setWidthTracksTextView:YES];
     [logTextView setEditable:NO];
+    [logTextView setSelectable:YES];
+    [logTextView setRichText:NO];
     [logTextView setFont:[NSFont fontWithName:@"Menlo" size:11] ?: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]];
     [logTextView setBackgroundColor:[NSColor controlBackgroundColor]];
     [logTextView setTextColor:[NSColor textColor]];
-    [logTextView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 
     [logScrollView setDocumentView:logTextView];
     [contentView addSubview:logScrollView];
@@ -2086,10 +2102,20 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         NSString* text = SafeStr(line);
         dispatch_async(dispatch_get_main_queue(), ^{
             AppDelegate* strongSelf = weakSelf;
-            if (!strongSelf) return;
-            NSAttributedString* attr = [[NSAttributedString alloc] initWithString:[text stringByAppendingString:@"\n"]];
+            if (!strongSelf || !strongSelf->logTextView) return;
+            NSRange prevSel = [strongSelf->logTextView selectedRange];
+            NSFont* logFont = [strongSelf->logTextView font] ?: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+            NSColor* logColor = [strongSelf->logTextView textColor] ?: [NSColor textColor];
+            NSDictionary* attrs = @{
+                NSFontAttributeName: logFont,
+                NSForegroundColorAttributeName: logColor
+            };
+            NSAttributedString* attr = [[NSAttributedString alloc] initWithString:[text stringByAppendingString:@"\n"] attributes:attrs];
             [[strongSelf->logTextView textStorage] appendAttributedString:attr];
-            [strongSelf->logTextView scrollToEndOfDocument:nil];
+            // 仅当用户当前未拖选日志文本时才自动滚到底部，避免打断多行框选复制
+            if (prevSel.length == 0) {
+                [strongSelf->logTextView scrollToEndOfDocument:nil];
+            }
         });
     });
 
@@ -2556,6 +2582,22 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     acast::desktop::DesktopController::GetInstance().Log(errStr.UTF8String);
 }
 
+- (void)onCopyLogClicked:(id)sender {
+    if (!logTextView) return;
+    NSString* fullText = [logTextView string] ?: @"";
+    if ([fullText length] == 0) return;
+
+    NSRange sel = [logTextView selectedRange];
+    NSString* textToCopy = fullText;
+    if (sel.location != NSNotFound && sel.length > 0 && NSMaxRange(sel) <= [fullText length]) {
+        textToCopy = [fullText substringWithRange:sel];
+    }
+
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:textToCopy forType:NSPasteboardTypeString];
+}
+
 - (void)onClearLogClicked:(id)sender {
     [[logTextView textStorage] setAttributedString:[[NSAttributedString alloc] initWithString:@""]];
 }
@@ -2578,7 +2620,6 @@ int RunDesktopApp(int argc, char* argv[]) {
         NSMenu* menubar = [[NSMenu alloc] init];
         NSMenuItem* appMenuItem = [[NSMenuItem alloc] init];
         [menubar addItem:appMenuItem];
-        [app setMainMenu:menubar];
 
         NSMenu* appMenu = [[NSMenu alloc] init];
         NSString* quitTitle = [@"退出 " stringByAppendingString:@"ACast"];
@@ -2587,6 +2628,21 @@ int RunDesktopApp(int argc, char* argv[]) {
                                                        keyEquivalent:@"q"];
         [appMenu addItem:quitMenuItem];
         [appMenuItem setSubmenu:appMenu];
+
+        // 标准 Edit 编辑菜单（确保 NSTextView / NSTextField 原生支持 Cmd+A 全选、Cmd+C 拷贝、Cmd+V 粘贴）
+        NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
+        [menubar addItem:editMenuItem];
+        NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"编辑"];
+        [editMenu addItemWithTitle:@"撤销" action:@selector(undo:) keyEquivalent:@"z"];
+        [editMenu addItemWithTitle:@"重做" action:@selector(redo:) keyEquivalent:@"Z"];
+        [editMenu addItem:[NSMenuItem separatorItem]];
+        [editMenu addItemWithTitle:@"剪切" action:@selector(cut:) keyEquivalent:@"x"];
+        [editMenu addItemWithTitle:@"拷贝" action:@selector(copy:) keyEquivalent:@"c"];
+        [editMenu addItemWithTitle:@"粘贴" action:@selector(paste:) keyEquivalent:@"v"];
+        [editMenu addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@"a"];
+        [editMenuItem setSubmenu:editMenu];
+
+        [app setMainMenu:menubar];
 
         [app run];
     }

@@ -577,15 +577,18 @@ final class ExtensionFastMirrorBridge {
                     let (myIp, _) = Self.getLocalWiFiAddressAndBroadcast()
                     if !remoteIp.isEmpty && remoteIp == myIp { continue }
 
-                    if cmd == "desktop_beacon" || cmd == "request_reverse_connect" || cmd == "discover_phone" {
-                        var targetIp = (json["ip"] as? String) ?? (json["desktop_ip"] as? String) ?? remoteIp
+                    if cmd == "request_reverse_connect" {
+                        var targetIp = (json["desktop_ip"] as? String) ?? (json["ip"] as? String) ?? remoteIp
                         if targetIp.isEmpty || targetIp == "127.0.0.1" { targetIp = remoteIp }
                         let tcpPort = UInt16((json["tcp_port"] as? Int) ?? 19990)
                         if !targetIp.isEmpty {
-                            self.lock.lock()
-                            self.discoveredDesktopIps.insert(targetIp)
-                            self.lock.unlock()
                             self.connectToDesktop(ip: targetIp, port: tcpPort)
+                        }
+                    } else if cmd == "discover_phone" || cmd == "desktop_beacon" {
+                        if !myIp.isEmpty {
+                            let (_, bcast) = Self.getLocalWiFiAddressAndBroadcast()
+                            let beacon = "{\"cmd\":\"phone_beacon\",\"device_name\":\"iPhone (ACast 屏幕广播)\",\"ip\":\"\(myIp)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
+                            Self.sendUdpBroadcast(message: beacon, broadcastIp: bcast, port: 19998)
                         }
                     }
                 }
@@ -601,19 +604,6 @@ final class ExtensionFastMirrorBridge {
                 if !ip.isEmpty {
                     let beacon = "{\"cmd\":\"phone_beacon\",\"device_name\":\"iPhone (ACast 屏幕广播)\",\"ip\":\"\(ip)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
                     Self.sendUdpBroadcast(message: beacon, broadcastIp: bcast, port: 19998)
-
-                    // 自动主动直连子网 .1 网关 (如 Mac 共享热点 192.168.2.1:19990)
-                    let parts = ip.split(separator: ".")
-                    if parts.count == 4 && parts[3] != "1" {
-                        let gw = "\(parts[0]).\(parts[1]).\(parts[2]).1"
-                        self.connectToDesktop(ip: gw, port: 19990)
-                    }
-                }
-                self.lock.lock()
-                let peers = Array(self.discoveredDesktopIps)
-                self.lock.unlock()
-                for peerIp in peers {
-                    self.connectToDesktop(ip: peerIp, port: 19990)
                 }
                 Thread.sleep(forTimeInterval: 2.0)
             }

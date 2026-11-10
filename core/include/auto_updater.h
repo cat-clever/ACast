@@ -16,7 +16,7 @@ struct UpdateInfo {
 };
 
 #ifndef ACAST_VERSION_STRING
-#define ACAST_VERSION_STRING "0.5.4"
+#define ACAST_VERSION_STRING "0.5.5"
 #endif
 
 class AutoUpdater {

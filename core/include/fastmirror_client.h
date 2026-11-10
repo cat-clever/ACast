@@ -73,6 +73,7 @@ private:
     ReverseConnectCallback reverse_cb_;
 
     std::mutex conn_mutex_;
+    std::string pending_connect_ip_;
     std::atomic<uint64_t> connect_epoch_{0};
     std::atomic<bool> reverse_running_{false};
     int reverse_server_fd_{-1};
