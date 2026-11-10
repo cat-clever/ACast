@@ -211,28 +211,39 @@ void FastMirrorClient::AdoptSocket(int sock, const std::string& ip, uint16_t por
     }
 }
 
-bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout_ms) {
-    // 若该 IP 已经通过反向直连建立连接，直接复用返回成功
-    {
-        std::lock_guard<std::mutex> lock(conn_mutex_);
-        if (is_connected_ && connected_ip_ == ip && !active_sockets_.empty()) {
-            return true;
-        }
+static void SendUdpRadioWakeup(const std::string& target_ip) {
+    int udp_sock = (int)socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_sock < 0) return;
+
+    BindTcpSocketToMatchingInterface(udp_sock, target_ip);
+
+    struct sockaddr_in uaddr;
+    std::memset(&uaddr, 0, sizeof(uaddr));
+    uaddr.sin_family = AF_INET;
+    uaddr.sin_port = htons(19998);
+    if (inet_pton(AF_INET, target_ip.c_str(), &uaddr.sin_addr) > 0) {
+        // 1. 发送 discover_phone 触发手机立即向外回传 UDP 信标，强制唤醒 iOS/Android 802.11 Wi-Fi PSM 休眠状态
+        const char* wake_msg = "{\"cmd\":\"discover_phone\"}";
+        sendto(udp_sock, wake_msg, (int)std::strlen(wake_msg), 0, (struct sockaddr*)&uaddr, sizeof(uaddr));
+
+        // 2. 同时发送反向直连指令，通知支持反向直连的手机主动连入 19990
+        const char* rev_msg = "{\"cmd\":\"request_reverse_connect\",\"tcp_port\":19990}";
+        sendto(udp_sock, rev_msg, (int)std::strlen(rev_msg), 0, (struct sockaddr*)&uaddr, sizeof(uaddr));
     }
+    CLOSE_SOCKET(udp_sock);
+}
 
-    Disconnect();
-
+static int OpenNonBlockingCandidateSocket(const std::string& ip, const struct sockaddr_in& addr, bool& connected_immediately) {
+    connected_immediately = false;
     int sock = (int)socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return false;
+    if (sock < 0) return -1;
 
     // 绑定与目标 IP 同网段的物理/热点网卡（避免被 utun VPN 路由截获）
     BindTcpSocketToMatchingInterface(sock, ip);
 
-    // 设置 TCP_NODELAY 降低延迟 (<20ms)
     int nodelay = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
 
-    // 启用 TCP 保活，保持长连接不被路由器或系统中断
     int keepalive = 1;
     setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (const char*)&keepalive, sizeof(keepalive));
 #ifdef SO_NOSIGPIPE
@@ -240,93 +251,157 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
     setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, (const char*)&nosigpipe, sizeof(nosigpipe));
 #endif
 
-    // 设置合理的发送超时（防止网络彻底拥死时无限阻塞）
 #if defined(_WIN32)
     DWORD tv_send = 5000;
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_send, sizeof(tv_send));
+    u_long nonblock = 1;
+    ioctlsocket(sock, FIONBIO, &nonblock);
 #else
     struct timeval tv_send;
     tv_send.tv_sec = 5;
     tv_send.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_send, sizeof(tv_send));
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags >= 0) fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 #endif
+
+    int rc = connect(sock, (const struct sockaddr*)&addr, sizeof(addr));
+    if (rc == 0) {
+        connected_immediately = true;
+        return sock;
+    }
+
+#if defined(_WIN32)
+    int err = WSAGetLastError();
+    bool in_progress = (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS);
+#else
+    bool in_progress = (errno == EINPROGRESS || errno == EWOULDBLOCK);
+#endif
+    if (!in_progress) {
+        CLOSE_SOCKET(sock);
+        return -1;
+    }
+    return sock;
+}
+
+static void RestoreSocketBlockingMode(int sock) {
+#if defined(_WIN32)
+    u_long block = 0;
+    ioctlsocket(sock, FIONBIO, &block);
+#else
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags >= 0) fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
+#endif
+}
+
+bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout_ms) {
+    // 若该 IP 已经建立连接，直接复用返回成功
+    {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        if (is_connected_ && connected_ip_ == ip && !active_sockets_.empty()) {
+            return true;
+        }
+    }
+
+    uint64_t my_epoch = ++connect_epoch_;
+    Disconnect();
 
     struct sockaddr_in addr;
     std::memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) <= 0) {
-        CLOSE_SOCKET(sock);
         return false;
     }
 
-    // 非阻塞连接 + 轮询等待（如果在等待期间收到手机主动反向直连，立即成功返回）
-#if defined(_WIN32)
-    u_long nonblock = 1;
-    ioctlsocket(sock, FIONBIO, &nonblock);
-#else
-    int flags = fcntl(sock, F_GETFL, 0);
-    if (flags >= 0) fcntl(sock, F_SETFL, flags | O_NONBLOCK);
-#endif
+    // Happy Eyeballs 阶梯式并发 TCP SYN 探测 + UDP 射频唤醒：
+    // 解决 macOS 热点 (bridge100) / 路由器下 iPhone 处于 802.11 PSM 节能休眠导致首包 SYN 被丢弃并陷入秒级退避的问题
+    std::vector<int> candidates;
+    int winner_sock = -1;
+    int waited_ms = 0;
+    const int step_ms = 25;
+    const int spawn_interval_ms = 200;
+    const size_t max_candidates = 8;
+    int next_spawn_ms = 0;
+    int max_wait = (timeout_ms > 0) ? timeout_ms : 5000;
 
-    int rc = connect(sock, (struct sockaddr*)&addr, sizeof(addr));
-    bool connected_direct = false;
-    if (rc == 0) {
-        connected_direct = true;
-    } else {
-#if defined(_WIN32)
-        int err = WSAGetLastError();
-        bool in_progress = (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS);
-#else
-        bool in_progress = (errno == EINPROGRESS || errno == EWOULDBLOCK);
-#endif
-        if (in_progress) {
-            int waited_ms = 0;
-            int step_ms = 100;
-            int max_wait = (timeout_ms > 0) ? timeout_ms : 3000;
-            while (waited_ms < max_wait) {
-                if (is_connected_) {
-                    // 手机已通过反向直连端口 (19990) 成功连入！
-                    CLOSE_SOCKET(sock);
-                    return true;
+    while (waited_ms < max_wait) {
+        if (connect_epoch_.load() != my_epoch) {
+            break;
+        }
+        if (is_connected_) {
+            // 手机已通过反向直连端口 (19990) 成功连入
+            for (int c : candidates) CLOSE_SOCKET(c);
+            return true;
+        }
+
+        if (waited_ms >= next_spawn_ms && candidates.size() < max_candidates) {
+            SendUdpRadioWakeup(ip);
+            bool imm = false;
+            int s = OpenNonBlockingCandidateSocket(ip, addr, imm);
+            if (s >= 0) {
+                if (imm) {
+                    winner_sock = s;
+                    break;
                 }
-                fd_set wfds;
-                FD_ZERO(&wfds);
-                FD_SET(sock, &wfds);
-                struct timeval tv;
-                tv.tv_sec = 0;
-                tv.tv_usec = step_ms * 1000;
-                int sel = select(sock + 1, nullptr, &wfds, nullptr, &tv);
-                if (sel > 0 && FD_ISSET(sock, &wfds)) {
+                candidates.push_back(s);
+            }
+            next_spawn_ms = waited_ms + spawn_interval_ms;
+        }
+
+        if (candidates.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(step_ms));
+            waited_ms += step_ms;
+            continue;
+        }
+
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        int max_fd = -1;
+        for (int c : candidates) {
+            FD_SET(c, &wfds);
+            if (c > max_fd) max_fd = c;
+        }
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = step_ms * 1000;
+        int sel = select(max_fd + 1, nullptr, &wfds, nullptr, &tv);
+        if (sel > 0) {
+            for (size_t i = 0; i < candidates.size(); ) {
+                int c = candidates[i];
+                if (FD_ISSET(c, &wfds)) {
                     int so_err = 0;
                     socklen_t len = sizeof(so_err);
-                    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&so_err, &len) == 0 && so_err == 0) {
-                        connected_direct = true;
+                    if (getsockopt(c, SOL_SOCKET, SO_ERROR, (char*)&so_err, &len) == 0 && so_err == 0) {
+                        winner_sock = c;
+                        candidates.erase(candidates.begin() + i);
+                        break;
+                    } else {
+                        CLOSE_SOCKET(c);
+                        candidates.erase(candidates.begin() + i);
+                        continue;
                     }
-                    break;
-                } else if (sel < 0) {
-                    break;
                 }
-                waited_ms += step_ms;
+                ++i;
+            }
+            if (winner_sock >= 0) {
+                break;
             }
         }
+        waited_ms += step_ms;
     }
 
-    if (!connected_direct) {
-        CLOSE_SOCKET(sock);
-        // 再次检查等待期间是否已通过反向直连建立连接
+    for (int c : candidates) {
+        CLOSE_SOCKET(c);
+    }
+
+    if (winner_sock < 0) {
         return is_connected_.load();
     }
 
-    // 恢复阻塞模式
-#if defined(_WIN32)
-    u_long block = 0;
-    ioctlsocket(sock, FIONBIO, &block);
-#else
-    if (flags >= 0) fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
-#endif
-
-    AdoptSocket(sock, ip, port);
+    RestoreSocketBlockingMode(winner_sock);
+    AdoptSocket(winner_sock, ip, port);
     return true;
 }
 

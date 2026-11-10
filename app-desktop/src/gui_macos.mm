@@ -2181,37 +2181,67 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 }
 
 - (void)reloadDevicePopUp {
+    // 记录刷新前用户当前选中的设备项，防止后台发现列表周期刷新时把用户选中的 iPhone 重置回第一项
+    NSString* prevType = nil;
+    NSString* prevIp = nil;
+    NSString* prevSerial = nil;
+    NSMenuItem* prevItem = [phonePopUp selectedItem];
+    if (prevItem) {
+        NSDictionary* prevDict = [prevItem representedObject];
+        if (prevDict) {
+            prevType = prevDict[@"type"];
+            prevIp = prevDict[@"ip"];
+            prevSerial = prevDict[@"serial"];
+        }
+    }
+
     [phonePopUp removeAllItems];
+    NSInteger restoreIndex = -1;
 
     // 1. 添加局域网对等发现的 Wi-Fi 手机 (iOS / Android)
     for (const auto& phone : cachedWifiPhones) {
-        NSString* title = [NSString stringWithFormat:@"📱 %@ (%@)", SafeStr(phone.name), SafeStr(phone.ip)];
+        NSString* ipStr = SafeStr(phone.ip);
+        NSString* title = [NSString stringWithFormat:@"📱 %@ (%@)", SafeStr(phone.name), ipStr];
         [phonePopUp addItemWithTitle:title];
         NSMenuItem* item = [phonePopUp lastItem];
         NSDictionary* dict = @{
             @"type": @"wifi",
-            @"ip": SafeStr(phone.ip),
+            @"ip": ipStr,
             @"port": @(phone.port > 0 ? phone.port : 19999)
         };
         [item setRepresentedObject:dict];
+        if ([prevType isEqualToString:@"wifi"] && prevIp && [prevIp isEqualToString:ipStr]) {
+            restoreIndex = [phonePopUp numberOfItems] - 1;
+        }
     }
 
     // 2. 添加 USB 直连设备
     for (const auto& dev : cachedUsbDevices) {
-        NSString* title = [NSString stringWithFormat:@"🔌 USB: %@ (%@)", SafeStr(dev.model), SafeStr(dev.serial)];
+        NSString* serialStr = SafeStr(dev.serial);
+        NSString* title = [NSString stringWithFormat:@"🔌 USB: %@ (%@)", SafeStr(dev.model), serialStr];
         [phonePopUp addItemWithTitle:title];
         NSMenuItem* item = [phonePopUp lastItem];
         NSDictionary* dict = @{
             @"type": @"usb",
-            @"serial": SafeStr(dev.serial)
+            @"serial": serialStr
         };
         [item setRepresentedObject:dict];
+        if ([prevType isEqualToString:@"usb"] && prevSerial && [prevSerial isEqualToString:serialStr]) {
+            restoreIndex = [phonePopUp numberOfItems] - 1;
+        }
     }
 
     // 3. 始终提供手动输入 IP 直连项（支持跨网段或开启 AP 广播隔离时的 iOS / Android 私有协议直连）
     [phonePopUp addItemWithTitle:@"⌨️ 手动输入手机 IP 直连 (iOS / Android)..."];
     NSMenuItem* manualItem = [phonePopUp lastItem];
     [manualItem setRepresentedObject:@{ @"type": @"manual" }];
+    if ([prevType isEqualToString:@"manual"] && restoreIndex < 0 && cachedWifiPhones.empty() && cachedUsbDevices.empty()) {
+        restoreIndex = [phonePopUp numberOfItems] - 1;
+    }
+
+    if (restoreIndex >= 0 && restoreIndex < [phonePopUp numberOfItems]) {
+        [phonePopUp selectItemAtIndex:restoreIndex];
+    }
 }
 
 - (void)onConnectPhoneClicked:(id)sender {
@@ -2388,7 +2418,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     }
 
     [standalonePhoneWindow makeKeyAndOrderFront:nil];
-    if (screenView) {
+    if (screenView && [screenView window] == standalonePhoneWindow) {
         [standalonePhoneWindow makeFirstResponder:screenView];
     }
 }

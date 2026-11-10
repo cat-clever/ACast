@@ -221,7 +221,7 @@ jobs:
         run: |
           chmod +x scripts/build_ios_ipa.sh
           APP_VER="${GITHUB_REF_NAME#v}"
-          APP_VER="${APP_VER:-0.5.3}"
+          APP_VER="${APP_VER:-0.5.4}"
           ./scripts/build_ios_ipa.sh "${APP_VER}"
 
       - name: 同时生成源码与扩展归档包

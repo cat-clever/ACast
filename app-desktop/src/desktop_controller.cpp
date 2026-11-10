@@ -247,6 +247,20 @@ void DesktopController::ConnectWifiPhone(const std::string& ip, uint16_t port) {
         Log("[局域网直连] 错误：请输入有效的手机局域网 IP 地址！");
         return;
     }
+
+    if (fastmirror_client_ && fastmirror_client_->IsConnected() && fastmirror_client_->GetConnectedIp() == ip) {
+        Log("[局域网直连] 🎉 手机 FastMirror 私有协议通道已处于激活状态 (" + ip + ":" + std::to_string(port) + ")！");
+        FastMirrorCallback cb_to_call;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cb_to_call = fm_cb_;
+        }
+        if (cb_to_call) {
+            cb_to_call(true, ip + ":" + std::to_string(port));
+        }
+        return;
+    }
+
     Log("[局域网直连] 正在建立 FastMirror 私有协议高速直连: " + ip + ":" + std::to_string(port) + " ...");
 
     // 同步向目标手机发送 UDP 反向直连唤醒信令 (19998 -> 手机主动出站连接本机 19990)
@@ -255,7 +269,7 @@ void DesktopController::ConnectWifiPhone(const std::string& ip, uint16_t port) {
     std::thread([this, ip, port]() {
         bool ok = false;
         if (fastmirror_client_) {
-            ok = fastmirror_client_->Connect(ip, port, 3000);
+            ok = fastmirror_client_->Connect(ip, port, 5000);
         }
 
         FastMirrorCallback cb_to_call;
@@ -264,7 +278,7 @@ void DesktopController::ConnectWifiPhone(const std::string& ip, uint16_t port) {
             cb_to_call = fm_cb_;
         }
 
-        if (ok) {
+        if (ok || (fastmirror_client_ && fastmirror_client_->IsConnected())) {
             Log("[局域网直连] 🎉 成功连接手机 FastMirror 私有协议通道 (" + ip + ":" + std::to_string(port) + ")！通信延迟 < 20ms。");
             if (cb_to_call) {
                 cb_to_call(true, ip + ":" + std::to_string(port));

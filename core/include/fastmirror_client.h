@@ -22,7 +22,7 @@ public:
     ~FastMirrorClient();
 
     // 建立局域网 Wi-Fi IP 或本机端口连接
-    bool Connect(const std::string& ip, uint16_t port = DEFAULT_CONTROL_PORT, int timeout_ms = 3000);
+    bool Connect(const std::string& ip, uint16_t port = DEFAULT_CONTROL_PORT, int timeout_ms = 5000);
     void Disconnect();
     bool IsConnected() const;
 
@@ -73,6 +73,7 @@ private:
     ReverseConnectCallback reverse_cb_;
 
     std::mutex conn_mutex_;
+    std::atomic<uint64_t> connect_epoch_{0};
     std::atomic<bool> reverse_running_{false};
     int reverse_server_fd_{-1};
     std::thread reverse_server_thread_;
