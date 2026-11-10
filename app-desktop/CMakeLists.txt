@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(acast_desktop VERSION 0.5.6 LANGUAGES CXX)
+project(acast_desktop VERSION 0.5.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -79,6 +79,8 @@ if(APPLE)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_BINARY_DIR}/camera-extension/com.clevercat.acast.camera-extension.systemextension
             $<TARGET_FILE_DIR:acast_desktop>/../Library/SystemExtensions/com.clevercat.acast.camera-extension.systemextension
+        COMMAND /usr/bin/plutil -replace CFBundleShortVersionString -string "${PROJECT_VERSION}" $<TARGET_BUNDLE_DIR:acast_desktop>/Contents/Info.plist
+        COMMAND /usr/bin/plutil -replace CFBundleVersion -string "${PROJECT_VERSION}" $<TARGET_BUNDLE_DIR:acast_desktop>/Contents/Info.plist
         COMMAND /usr/bin/plutil -replace NSLocalNetworkUsageDescription -string "ACast 需要访问本地局域网，用于自动发现手机与大屏设备并通过 FastMirror 私有协议进行极低延迟直连投屏。" $<TARGET_BUNDLE_DIR:acast_desktop>/Contents/Info.plist
         COMMAND codesign --force --deep --sign - $<TARGET_BUNDLE_DIR:acast_desktop>
         COMMENT "打包嵌入 macOS 虚拟摄像头系统扩展 (Camera Extension)..."

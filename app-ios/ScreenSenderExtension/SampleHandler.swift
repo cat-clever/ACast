@@ -1,5 +1,6 @@
 import ReplayKit
 import Foundation
+import UIKit
 import VideoToolbox
 import CoreMedia
 import CoreVideo
@@ -15,6 +16,7 @@ final class ExtensionFastMirrorBridge {
     static let shared = ExtensionFastMirrorBridge()
 
     private let lock = NSLock()
+    private let loopbackSendLock = NSLock()
     private var compressionSession: VTCompressionSession?
     private var currentWidth: Int32 = 0
     private var currentHeight: Int32 = 0
@@ -282,21 +284,29 @@ final class ExtensionFastMirrorBridge {
         }
 
         // 2. 若当前尚无直接电脑连接，推送至主应用环回桥 (127.0.0.1:19995)
-        if connectLoopbackIfNeeded() {
+        _ = sendOverLoopback(packet)
+    }
+
+    private func sendOverLoopback(_ packet: Data) -> Bool {
+        if !connectLoopbackIfNeeded() { return false }
+        lock.lock()
+        let fd = loopbackFd
+        lock.unlock()
+        if fd < 0 { return false }
+
+        loopbackSendLock.lock()
+        let ok = Self.sendAll(fd: fd, data: packet)
+        loopbackSendLock.unlock()
+
+        if !ok {
             lock.lock()
-            let fd = loopbackFd
-            lock.unlock()
-            if fd >= 0 {
-                if !Self.sendAll(fd: fd, data: packet) {
-                    lock.lock()
-                    if loopbackFd == fd {
-                        Darwin.close(loopbackFd)
-                        loopbackFd = -1
-                    }
-                    lock.unlock()
-                }
+            if loopbackFd == fd {
+                Darwin.close(loopbackFd)
+                loopbackFd = -1
             }
+            lock.unlock()
         }
+        return ok
     }
 
     private func connectLoopbackIfNeeded() -> Bool {
@@ -338,7 +348,9 @@ final class ExtensionFastMirrorBridge {
             let keyPkt = cachedKeyFramePacket
             lock.unlock()
             if let kp = keyPkt {
+                loopbackSendLock.lock()
                 _ = Self.sendAll(fd: fd, data: kp)
+                loopbackSendLock.unlock()
             }
             return true
         } else {
@@ -412,12 +424,56 @@ final class ExtensionFastMirrorBridge {
         }
     }
 
+    private static func readExact(fd: Int32, buffer: UnsafeMutablePointer<UInt8>, count: Int) -> Bool {
+        var totalRead = 0
+        while totalRead < count {
+            let n = Darwin.recv(fd, buffer.advanced(by: totalRead), count - totalRead, 0)
+            if n <= 0 {
+                if n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                    usleep(1000)
+                    continue
+                }
+                return false
+            }
+            totalRead += n
+        }
+        return true
+    }
+
     private func drainClientSocketAsync(_ cfd: Int32) {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            var buf = [UInt8](repeating: 0, count: 512)
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            var header = [UInt8](repeating: 0, count: 16)
             while let self = self, self.isRunning {
-                let n = Darwin.recv(cfd, &buf, buf.count, 0)
-                if n <= 0 { break }
+                if !Self.readExact(fd: cfd, buffer: &header, count: 16) { break }
+                let magic = (UInt16(header[0]) << 8) | UInt16(header[1])
+                if magic != 0x464D && magic != 0x4D46 { break }
+
+                let msgType = header[2]
+                let payloadLen = (Int(header[4]) << 24) |
+                                 (Int(header[5]) << 16) |
+                                 (Int(header[6]) << 8) |
+                                 Int(header[7])
+                if payloadLen < 0 || payloadLen > 10 * 1024 * 1024 { break }
+
+                var fullPacket = Data(count: 16 + payloadLen)
+                let ok = fullPacket.withUnsafeMutableBytes { rawBuf -> Bool in
+                    guard let base = rawBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return false }
+                    memcpy(base, header, 16)
+                    if payloadLen == 0 { return true }
+                    return Self.readExact(fd: cfd, buffer: base.advanced(by: 16), count: payloadLen)
+                }
+                if !ok { break }
+
+                if msgType >= 0x10 && msgType <= 0x3F {
+                    // 优先通过环回桥 (127.0.0.1:19995) 转发给主应用 IOSRemoteControlEngine 处理
+                    let forwarded = self.sendOverLoopback(fullPacket)
+                    if !forwarded && (msgType == 0x22 || msgType == 0x30) && payloadLen > 0 {
+                        let payload = fullPacket.subdata(in: 16..<(16 + payloadLen))
+                        if let text = String(data: payload, encoding: .utf8), !text.isEmpty {
+                            UIPasteboard.general.string = text
+                        }
+                    }
+                }
             }
             guard let self = self else { return }
             self.lock.lock()

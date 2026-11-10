@@ -885,6 +885,7 @@ private:
     std::vector<uint8_t> ppsData;
     NSRect lastAspectFitRect;
     std::chrono::steady_clock::time_point lastDragSendTime;
+    std::chrono::steady_clock::time_point lastScrollSendTime;
     bool isMouseDown;
     uint16_t lastSentNormX;
     uint16_t lastSentNormY;
@@ -1046,6 +1047,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         formatDescription = NULL;
         lastAspectFitRect = NSZeroRect;
         lastDragSendTime = std::chrono::steady_clock::now();
+        lastScrollSendTime = std::chrono::steady_clock::now();
         isMouseDown = false;
         lastSentNormX = 5000;
         lastSentNormY = 5000;
@@ -1602,6 +1604,30 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 - (void)rightMouseDown:(NSEvent *)event {
     // 鼠标右键直接返回
     acast::desktop::DesktopController::GetInstance().SendBackKey();
+}
+
+- (void)scrollWheel:(NSEvent *)event {
+    CGFloat dy = [event scrollingDeltaY];
+    if (std::abs(dy) < 4.0) return;
+
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastScrollSendTime).count();
+    if (elapsed < 180) return;
+    lastScrollSendTime = now;
+
+    if (dy > 0) {
+        acast::desktop::DesktopController::GetInstance().SendKey(9);  // Up / 向上滚
+    } else {
+        acast::desktop::DesktopController::GetInstance().SendKey(10); // Down / 向下滚
+    }
+}
+
+- (void)paste:(id)sender {
+    NSString* text = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+    if (text && [text length] > 0) {
+        acast::desktop::DesktopController::GetInstance().Log(std::string("[私有协议反控] 已向手机同步粘贴剪贴板文本: ") + [text UTF8String]);
+        acast::desktop::DesktopController::GetInstance().SendTextInput([text UTF8String]);
+    }
 }
 
 - (void)sendNormalizedTouchWithEvent:(NSEvent *)event action:(uint8_t)action {

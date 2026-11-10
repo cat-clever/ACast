@@ -688,11 +688,35 @@ final class FastMirrorServer {
     }
 
     private func handleDesktopControlClient(_ cfd: Int32) {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            var buf = [UInt8](repeating: 0, count: 1024)
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            var header = [UInt8](repeating: 0, count: 16)
             while let self = self, self.isRunning {
-                let n = Darwin.recv(cfd, &buf, buf.count, 0)
-                if n <= 0 { break }
+                if !IOSNetUtils.readExact(fd: cfd, buffer: &header, count: 16) {
+                    break
+                }
+                let magic = (UInt16(header[0]) << 8) | UInt16(header[1])
+                if magic != 0x464D && magic != 0x4D46 {
+                    break
+                }
+                let msgType = header[2]
+                let payloadLen = (Int(header[4]) << 24) |
+                                 (Int(header[5]) << 16) |
+                                 (Int(header[6]) << 8) |
+                                 Int(header[7])
+                if payloadLen < 0 || payloadLen > 10 * 1024 * 1024 {
+                    break
+                }
+                var payload = Data()
+                if payloadLen > 0 {
+                    var pBuf = [UInt8](repeating: 0, count: payloadLen)
+                    if !IOSNetUtils.readExact(fd: cfd, buffer: &pBuf, count: payloadLen) {
+                        break
+                    }
+                    payload = Data(pBuf)
+                }
+                if msgType >= 0x10 && msgType <= 0x3F {
+                    IOSRemoteControlEngine.shared.handleControlPacket(msgType: msgType, payload: payload)
+                }
             }
             guard let self = self else { return }
             self.lock.lock()
@@ -772,15 +796,22 @@ final class FastMirrorServer {
                                  (Int(header[5]) << 16) |
                                  (Int(header[6]) << 8) |
                                  Int(header[7])
-                if payloadLen <= 0 || payloadLen > 10 * 1024 * 1024 { break }
+                if payloadLen < 0 || payloadLen > 10 * 1024 * 1024 { break }
 
                 var fullPacket = Data(count: 16 + payloadLen)
                 let ok = fullPacket.withUnsafeMutableBytes { rawBuf -> Bool in
                     guard let base = rawBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return false }
                     memcpy(base, header, 16)
+                    if payloadLen == 0 { return true }
                     return IOSNetUtils.readExact(fd: extFd, buffer: base.advanced(by: 16), count: payloadLen)
                 }
                 if !ok { break }
+
+                if msgType >= 0x10 && msgType <= 0x3F {
+                    let payload = payloadLen > 0 ? fullPacket.subdata(in: 16..<(16 + payloadLen)) : Data()
+                    IOSRemoteControlEngine.shared.handleControlPacket(msgType: msgType, payload: payload)
+                    continue
+                }
 
                 // 判断是否包含 SPS (NALU type == 7)
                 var isKey = false
@@ -1290,7 +1321,480 @@ final class IOSCameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDel
 }
 
 // ============================================================================
-// 7. iOS 主界面控制器 (深色科技仪表盘 + 自动发现电脑 + 手动 IP 直连 + 屏幕/相机推流)
+// 6.5 iOS 远程反向控制引擎 (FastMirror 控制包解析 + 应用内触控/滚动 + 全局剪贴板 + WDA 全系统注入)
+// ============================================================================
+
+final class IOSRemoteControlEngine {
+    static let shared = IOSRemoteControlEngine()
+
+    private let lock = NSLock()
+    private var touchDownPoint: CGPoint = .zero
+    private var lastMovePoint: CGPoint = .zero
+    private var touchDownTime: TimeInterval = 0
+    private var touchIndicator: UIView?
+
+    private let wdaQueue = DispatchQueue(label: "com.catclever.acast.ios.wda", qos: .userInteractive)
+    private let wdaSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 0.65
+        cfg.timeoutIntervalForResource = 1.0
+        return URLSession(configuration: cfg)
+    }()
+    private var wdaSessionId: String?
+    private var isWdaAvailable: Bool = false
+    private var lastWdaProbeTime: TimeInterval = 0
+
+    var onControlEvent: ((String) -> Void)?
+    var onWdaStatusChanged: ((Bool) -> Void)?
+
+    private init() {
+        startWdaMonitor()
+    }
+
+    func wdaReady() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isWdaAvailable
+    }
+
+    func handleControlPacket(msgType: UInt8, payload: Data) {
+        switch msgType {
+        case 0x10, 0x11, 0x12, 0x13: // TOUCH_DOWN, TOUCH_MOVE, TOUCH_UP, TOUCH_CANCEL
+            guard payload.count >= 7 else { return }
+            let bytes = [UInt8](payload)
+            let normX = (UInt16(bytes[1]) << 8) | UInt16(bytes[2])
+            let normY = (UInt16(bytes[3]) << 8) | UInt16(bytes[4])
+            handleTouch(msgType: msgType, normX: normX, normY: normY)
+
+        case 0x22, 0x30: // TEXT_INPUT, CLIPBOARD_SYNC
+            guard let text = String(data: payload, encoding: .utf8), !text.isEmpty else { return }
+            handleTextInput(text)
+
+        case 0x20, 0x23: // KEY_DOWN, SYSTEM_KEY
+            guard payload.count >= 2 else { return }
+            let bytes = [UInt8](payload)
+            let keyCode = (UInt16(bytes[0]) << 8) | UInt16(bytes[1])
+            let action: UInt8 = payload.count >= 3 ? bytes[2] : 0
+            if action == 0 {
+                handleKeyDown(keyCode: keyCode)
+            }
+
+        default:
+            break
+        }
+    }
+
+    private func handleTouch(msgType: UInt8, normX: UInt16, normY: UInt16) {
+        let bounds = UIScreen.main.bounds
+        let ptX = CGFloat(normX) / 10000.0 * bounds.width
+        let ptY = CGFloat(normY) / 10000.0 * bounds.height
+        let pt = CGPoint(x: ptX, y: ptY)
+
+        if msgType == 0x10 { // DOWN
+            lock.lock()
+            touchDownPoint = pt
+            lastMovePoint = pt
+            touchDownTime = Date().timeIntervalSince1970
+            lock.unlock()
+
+            DispatchQueue.main.async { [weak self] in
+                self?.updateTouchIndicator(at: pt, phase: 0)
+            }
+        } else if msgType == 0x11 { // MOVE
+            lock.lock()
+            let dy = lastMovePoint.y - pt.y
+            let downPt = touchDownPoint
+            lastMovePoint = pt
+            lock.unlock()
+
+            DispatchQueue.main.async { [weak self] in
+                self?.updateTouchIndicator(at: pt, phase: 1)
+                if abs(dy) > 0.5 {
+                    self?.scrollInAppAt(point: downPt, deltaY: dy)
+                }
+            }
+        } else if msgType == 0x12 || msgType == 0x13 { // UP / CANCEL
+            lock.lock()
+            let startPt = touchDownPoint
+            let dur = max(0.08, min(0.60, Date().timeIntervalSince1970 - touchDownTime))
+            lock.unlock()
+
+            let dist = hypot(pt.x - startPt.x, pt.y - startPt.y)
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.updateTouchIndicator(at: pt, phase: 2)
+                if msgType == 0x12 {
+                    if dist < 18.0 {
+                        self.performInAppTap(at: pt)
+                        self.onControlEvent?("👆 电脑远程点击: (\(Int(pt.x)), \(Int(pt.y)))")
+                    } else {
+                        self.onControlEvent?("👉 电脑远程滑动: (\(Int(startPt.x)),\(Int(startPt.y))) → (\(Int(pt.x)),\(Int(pt.y)))")
+                    }
+                }
+            }
+
+            if msgType == 0x12 {
+                if dist < 18.0 {
+                    performWdaTap(x: pt.x, y: pt.y)
+                } else {
+                    performWdaDrag(fromX: startPt.x, fromY: startPt.y, toX: pt.x, toY: pt.y, duration: min(0.32, max(0.12, dur)))
+                }
+            }
+        }
+    }
+
+    private static func activeKeyWindow() -> UIWindow? {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+        return windows.first(where: { $0.isKeyWindow }) ?? windows.first
+    }
+
+    private func handleTextInput(_ text: String) {
+        // 1. 立即写入 iOS 全局系统剪贴板 (跨任意 App 100% 生效)
+        UIPasteboard.general.string = text
+
+        // 2. 若本应用内有激活输入框，直接插入文字
+        DispatchQueue.main.async { [weak self] in
+            if let window = Self.activeKeyWindow(),
+               let responder = Self.findFirstResponder(in: window) as? UITextInput {
+                responder.insertText(text)
+            }
+            self?.onControlEvent?("📋 已同步电脑文字到 iOS 剪贴板: \"\(text)\"")
+        }
+
+        // 3. 若 WDA 激活，向当前前台系统应用直接键入文字
+        performWdaKeys(text)
+    }
+
+    private func handleKeyDown(keyCode: UInt16) {
+        let bounds = UIScreen.main.bounds
+        switch keyCode {
+        case 2: // KEY_HOME (返回主屏幕)
+            DispatchQueue.main.async { [weak self] in
+                self?.onControlEvent?("🏠 电脑触发【返回主屏幕 Home】")
+                UIControl().sendAction(#selector(URLSessionTask.suspend), to: UIApplication.shared, for: nil)
+            }
+            performWdaHomeScreen()
+
+        case 1: // KEY_BACK (返回手势)
+            DispatchQueue.main.async { [weak self] in
+                self?.onControlEvent?("◀ 电脑触发【返回 Back】侧滑手势")
+                Self.activeKeyWindow()?.endEditing(true)
+            }
+            performWdaDrag(fromX: 4, fromY: bounds.height * 0.5, toX: bounds.width * 0.72, toY: bounds.height * 0.5, duration: 0.15)
+
+        case 3: // KEY_APP_SWITCH (多任务切换)
+            DispatchQueue.main.async { [weak self] in
+                self?.onControlEvent?("▣ 电脑触发【多任务切换 Recents】")
+            }
+            performWdaDrag(fromX: bounds.width * 0.5, fromY: bounds.height - 4, toX: bounds.width * 0.5, toY: bounds.height * 0.52, duration: 0.36)
+
+        case 5: // F1 通知中心
+            DispatchQueue.main.async { [weak self] in
+                self?.onControlEvent?("⬇️ 电脑触发【下拉通知中心】")
+            }
+            performWdaDrag(fromX: bounds.width * 0.35, fromY: 4, toX: bounds.width * 0.35, toY: bounds.height * 0.75, duration: 0.22)
+
+        case 6: // F2 控制中心
+            DispatchQueue.main.async { [weak self] in
+                self?.onControlEvent?("🎛️ 电脑触发【下拉控制中心】")
+            }
+            performWdaDrag(fromX: bounds.width - 24, fromY: 4, toX: bounds.width - 24, toY: bounds.height * 0.65, duration: 0.22)
+
+        case 7: // Backspace
+            DispatchQueue.main.async { [weak self] in
+                if let window = Self.activeKeyWindow(),
+                   let responder = Self.findFirstResponder(in: window) as? UITextInput {
+                    responder.deleteBackward()
+                }
+                self?.onControlEvent?("⌫ 电脑触发【退格删除】")
+            }
+            performWdaKeys("\u{8}")
+
+        case 8: // Enter / Return
+            DispatchQueue.main.async { [weak self] in
+                Self.activeKeyWindow()?.endEditing(true)
+                self?.onControlEvent?("⏎ 电脑触发【回车确认】")
+            }
+            performWdaKeys("\n")
+
+        case 9: // Up
+            DispatchQueue.main.async { [weak self] in
+                self?.scrollInAppAt(point: CGPoint(x: bounds.width * 0.5, y: bounds.height * 0.5), deltaY: -120)
+            }
+            performWdaDrag(fromX: bounds.width * 0.5, fromY: bounds.height * 0.35, toX: bounds.width * 0.5, toY: bounds.height * 0.70, duration: 0.18)
+
+        case 10: // Down
+            DispatchQueue.main.async { [weak self] in
+                self?.scrollInAppAt(point: CGPoint(x: bounds.width * 0.5, y: bounds.height * 0.5), deltaY: 120)
+            }
+            performWdaDrag(fromX: bounds.width * 0.5, fromY: bounds.height * 0.70, toX: bounds.width * 0.5, toY: bounds.height * 0.35, duration: 0.18)
+
+        default:
+            break
+        }
+    }
+
+    // MARK: - 应用内触控命中、滚动与光标涟漪反馈
+
+    private func updateTouchIndicator(at point: CGPoint, phase: Int) {
+        guard let window = Self.activeKeyWindow() else { return }
+        let indicator: UIView
+        if let existing = touchIndicator {
+            indicator = existing
+        } else {
+            let v = UIView(frame: CGRect(x: 0, y: 0, width: 34, height: 34))
+            v.isUserInteractionEnabled = false
+            v.backgroundColor = UIColor(red: 0.18, green: 0.78, blue: 1.0, alpha: 0.38)
+            v.layer.cornerRadius = 17
+            v.layer.borderWidth = 2.0
+            v.layer.borderColor = UIColor.white.cgColor
+            v.alpha = 0.0
+            window.addSubview(v)
+            touchIndicator = v
+            indicator = v
+        }
+
+        window.bringSubviewToFront(indicator)
+        indicator.center = point
+
+        if phase == 0 {
+            indicator.transform = CGAffineTransform(scaleX: 0.75, y: 0.75)
+            UIView.animate(withDuration: 0.12) {
+                indicator.alpha = 1.0
+                indicator.transform = .identity
+            }
+        } else if phase == 1 {
+            indicator.alpha = 1.0
+        } else {
+            UIView.animate(withDuration: 0.22, animations: {
+                indicator.transform = CGAffineTransform(scaleX: 1.35, y: 1.35)
+                indicator.alpha = 0.0
+            }) { _ in
+                indicator.transform = .identity
+            }
+        }
+    }
+
+    private func performInAppTap(at point: CGPoint) {
+        guard let window = Self.activeKeyWindow(),
+              let hitView = window.hitTest(point, with: nil) else { return }
+
+        // 1. 检查是否点击了 RPSystemBroadcastPickerView 区域
+        var cur: UIView? = hitView
+        while let v = cur {
+            if let picker = v as? RPSystemBroadcastPickerView {
+                for sub in picker.subviews {
+                    if let btn = sub as? UIButton {
+                        btn.sendActions(for: .touchUpInside)
+                        return
+                    }
+                }
+            }
+            if let tf = v as? UITextField {
+                tf.becomeFirstResponder()
+                return
+            }
+            if let tv = v as? UITextView, tv.isEditable {
+                tv.becomeFirstResponder()
+                return
+            }
+            if let ctrl = v as? UIControl, ctrl.isEnabled {
+                UIView.animate(withDuration: 0.08, animations: {
+                    ctrl.alpha = 0.55
+                }) { _ in
+                    UIView.animate(withDuration: 0.12) {
+                        ctrl.alpha = 1.0
+                    }
+                }
+                ctrl.sendActions(for: .touchUpInside)
+                return
+            }
+            cur = v.superview
+        }
+
+        window.endEditing(true)
+    }
+
+    private func scrollInAppAt(point: CGPoint, deltaY: CGFloat) {
+        guard let window = Self.activeKeyWindow(),
+              let hitView = window.hitTest(point, with: nil) else { return }
+
+        var cur: UIView? = hitView
+        while let v = cur {
+            if let sv = v as? UIScrollView, sv.isScrollEnabled {
+                let maxY = max(0, sv.contentSize.height - sv.bounds.height + sv.contentInset.bottom)
+                let nextY = max(-sv.contentInset.top, min(maxY, sv.contentOffset.y + deltaY))
+                sv.setContentOffset(CGPoint(x: sv.contentOffset.x, y: nextY), animated: false)
+                return
+            }
+            cur = v.superview
+        }
+    }
+
+    private static func findFirstResponder(in view: UIView) -> UIResponder? {
+        if view.isFirstResponder { return view }
+        for sub in view.subviews {
+            if let found = findFirstResponder(in: sub) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    // MARK: - WebDriverAgent (127.0.0.1:8100) 全系统跨应用触控桥接
+
+    private func startWdaMonitor() {
+        wdaQueue.async { [weak self] in
+            while let self = self {
+                self.probeWdaStatus()
+                Thread.sleep(forTimeInterval: 4.0)
+            }
+        }
+    }
+
+    private func probeWdaStatus() {
+        guard let url = URL(string: "http://127.0.0.1:8100/status") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 0.5
+
+        let sem = DispatchSemaphore(value: 0)
+        var detected = false
+        var sid: String? = nil
+
+        let task = wdaSession.dataTask(with: req) { data, resp, err in
+            defer { sem.signal() }
+            guard err == nil,
+                  let http = resp as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  let d = data,
+                  let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+            detected = true
+            if let s = json["sessionId"] as? String, !s.isEmpty {
+                sid = s
+            } else if let val = json["value"] as? [String: Any], let s = val["sessionId"] as? String, !s.isEmpty {
+                sid = s
+            }
+        }
+        task.resume()
+        _ = sem.wait(timeout: .now() + 0.6)
+
+        if detected && sid == nil {
+            sid = createWdaSessionSync()
+        }
+
+        lock.lock()
+        let changed = (isWdaAvailable != detected)
+        isWdaAvailable = detected
+        if let validSid = sid {
+            wdaSessionId = validSid
+        }
+        lock.unlock()
+
+        if changed {
+            DispatchQueue.main.async { [weak self] in
+                self?.onWdaStatusChanged?(detected)
+            }
+        }
+    }
+
+    private func createWdaSessionSync() -> String? {
+        guard let url = URL(string: "http://127.0.0.1:8100/session") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "{\"capabilities\":{}}".data(using: .utf8)
+        req.timeoutInterval = 0.8
+
+        let sem = DispatchSemaphore(value: 0)
+        var sid: String? = nil
+        let task = wdaSession.dataTask(with: req) { data, _, err in
+            defer { sem.signal() }
+            guard err == nil, let d = data,
+                  let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+            if let s = json["sessionId"] as? String, !s.isEmpty {
+                sid = s
+            } else if let val = json["value"] as? [String: Any], let s = val["sessionId"] as? String, !s.isEmpty {
+                sid = s
+            }
+        }
+        task.resume()
+        _ = sem.wait(timeout: .now() + 0.9)
+        return sid
+    }
+
+    private func sendWdaPost(path: String, body: [String: Any], retrySessionOnFail: Bool = true) {
+        wdaQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let available = self.isWdaAvailable
+            let sid = self.wdaSessionId
+            self.lock.unlock()
+
+            if !available { return }
+
+            let resolvedPath: String
+            if path.contains("{sid}") {
+                let activeSid = sid ?? self.createWdaSessionSync() ?? ""
+                if activeSid.isEmpty { return }
+                resolvedPath = path.replacingOccurrences(of: "{sid}", with: activeSid)
+            } else {
+                resolvedPath = path
+            }
+
+            guard let url = URL(string: "http://127.0.0.1:8100" + resolvedPath),
+                  let bodyData = try? JSONSerialization.data(withJSONObject: body) else { return }
+
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = bodyData
+            req.timeoutInterval = 0.65
+
+            let task = self.wdaSession.dataTask(with: req) { [weak self] _, resp, _ in
+                guard let self = self else { return }
+                if let http = resp as? HTTPURLResponse, http.statusCode == 404 && retrySessionOnFail && path.contains("{sid}") {
+                    if let newSid = self.createWdaSessionSync() {
+                        self.lock.lock()
+                        self.wdaSessionId = newSid
+                        self.lock.unlock()
+                        self.sendWdaPost(path: path, body: body, retrySessionOnFail: false)
+                    }
+                }
+            }
+            task.resume()
+        }
+    }
+
+    private func performWdaTap(x: CGFloat, y: CGFloat) {
+        sendWdaPost(path: "/session/{sid}/wda/tap/0", body: ["x": Double(x), "y": Double(y)])
+    }
+
+    private func performWdaDrag(fromX: CGFloat, fromY: CGFloat, toX: CGFloat, toY: CGFloat, duration: Double) {
+        sendWdaPost(path: "/session/{sid}/wda/dragfromtoforduration", body: [
+            "fromX": Double(fromX),
+            "fromY": Double(fromY),
+            "toX": Double(toX),
+            "toY": Double(toY),
+            "duration": duration
+        ])
+    }
+
+    private func performWdaHomeScreen() {
+        sendWdaPost(path: "/wda/homescreen", body: [:])
+    }
+
+    private func performWdaKeys(_ text: String) {
+        let chars = Array(text).map { String($0) }
+        sendWdaPost(path: "/session/{sid}/wda/keys", body: ["value": chars])
+    }
+}
+
+// ============================================================================
+// 7. iOS 主界面控制器 (深色科技仪表盘 + 自动发现电脑 + 手动 IP 直连 + 屏幕/相机推流 + 远程反控)
 // ============================================================================
 
 final class MainViewController: UIViewController {
@@ -1302,6 +1806,8 @@ final class MainViewController: UIViewController {
     private let inAppCaptureBtn = UIButton(type: .system)
     private let cameraStreamBtn = UIButton(type: .system)
     private let switchCamBtn = UIButton(type: .system)
+    private let wdaStatusLabel = UILabel()
+    private let lastControlEventLabel = UILabel()
     private var broadcastPicker: RPSystemBroadcastPickerView?
 
     private var inAppScreenEncoder: IOSHardwareH264Encoder?
@@ -1318,6 +1824,7 @@ final class MainViewController: UIViewController {
         BackgroundAudioKeepAlive.shared.start()
         FastMirrorServer.shared.start()
         IOSPeerDiscovery.shared.start()
+        _ = IOSRemoteControlEngine.shared
 
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.updateNetworkHeader()
@@ -1495,6 +2002,28 @@ final class MainViewController: UIViewController {
         discoveryCard.addSubview(dStack)
         pinInside(dStack, card: discoveryCard)
         contentStack.addArrangedSubview(discoveryCard)
+
+        // 4. 电脑反向控制状态卡片 (应用内触控 + 全局剪贴板 + Home键 + WDA 全系统跨应用触控)
+        let controlCard = makeCard()
+        let controlTitle = makeSectionTitle("🎮 电脑反向控制引擎 (FastMirror + WDA)")
+
+        wdaStatusLabel.text = "🔵 基础反控已就绪：支持电脑远程点击本应用按钮、滑动、Home 键返回桌面、电脑打字同步至 iOS 全局剪贴板\n💡 若本机运行 WebDriverAgent (:8100)，将自动升级为全系统跨任意 App 点击与滑动"
+        wdaStatusLabel.numberOfLines = 0
+        wdaStatusLabel.font = UIFont.systemFont(ofSize: 12.5, weight: .medium)
+        wdaStatusLabel.textColor = UIColor(red: 0.58, green: 0.80, blue: 1.0, alpha: 1.0)
+
+        lastControlEventLabel.text = "最近反控指令: 等待电脑端鼠标点击 / 滑动 / 键盘输入..."
+        lastControlEventLabel.numberOfLines = 0
+        lastControlEventLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        lastControlEventLabel.textColor = UIColor(white: 0.78, alpha: 1.0)
+
+        let cStack = UIStackView(arrangedSubviews: [controlTitle, wdaStatusLabel, lastControlEventLabel])
+        cStack.axis = .vertical
+        cStack.spacing = 8
+        cStack.translatesAutoresizingMaskIntoConstraints = false
+        controlCard.addSubview(cStack)
+        pinInside(cStack, card: controlCard)
+        contentStack.addArrangedSubview(controlCard)
     }
 
     private func bindServices() {
@@ -1527,6 +2056,23 @@ final class MainViewController: UIViewController {
             } else {
                 self.cameraStreamBtn.setTitle("📷 开启 1080P 摄像头推流 (直通虚拟相机)", for: .normal)
                 self.cameraStreamBtn.backgroundColor = UIColor(red: 0.14, green: 0.56, blue: 0.42, alpha: 1.0)
+            }
+        }
+
+        IOSRemoteControlEngine.shared.onControlEvent = { [weak self] evt in
+            guard let self = self else { return }
+            self.lastControlEventLabel.text = "最近反控指令: \(evt)"
+            self.lastControlEventLabel.textColor = UIColor(red: 0.30, green: 0.92, blue: 0.60, alpha: 1.0)
+        }
+
+        IOSRemoteControlEngine.shared.onWdaStatusChanged = { [weak self] ready in
+            guard let self = self else { return }
+            if ready {
+                self.wdaStatusLabel.text = "🟢 全系统跨应用触控已激活 (已自动桥接本机 WebDriverAgent :8100)\n支持在电脑视窗直接点击、滑动、返回、切换任意 iOS 应用及直接打字！"
+                self.wdaStatusLabel.textColor = UIColor(red: 0.25, green: 0.92, blue: 0.55, alpha: 1.0)
+            } else {
+                self.wdaStatusLabel.text = "🔵 基础反控已就绪：支持电脑远程点击本应用按钮、滑动、Home 键返回桌面、电脑打字同步至 iOS 全局剪贴板\n💡 若本机运行 WebDriverAgent (:8100)，将自动升级为全系统跨任意 App 点击与滑动"
+                self.wdaStatusLabel.textColor = UIColor(red: 0.58, green: 0.80, blue: 1.0, alpha: 1.0)
             }
         }
     }
