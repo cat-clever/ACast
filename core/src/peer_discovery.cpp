@@ -18,6 +18,8 @@ using socket_t = SOCKET;
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 using socket_t = int;
 #define IS_VALID_SOCKET(s) ((s) >= 0)
 #define CLOSE_SOCKET(s) close(s)
@@ -126,6 +128,21 @@ void PeerDiscovery::SearchPhones() {
     SendBroadcast(searchMsg);
 }
 
+static void SendUnicastUdp(const std::string& json_str, const std::string& target_ip, uint16_t port) {
+    if (target_ip.empty()) return;
+    socket_t sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (!IS_VALID_SOCKET(sock)) return;
+
+    struct sockaddr_in destAddr;
+    std::memset(&destAddr, 0, sizeof(destAddr));
+    destAddr.sin_family = AF_INET;
+    destAddr.sin_port = htons(port);
+    if (inet_pton(AF_INET, target_ip.c_str(), &destAddr.sin_addr) > 0) {
+        sendto(sock, json_str.c_str(), (int)json_str.length(), 0, (struct sockaddr*)&destAddr, sizeof(destAddr));
+    }
+    CLOSE_SOCKET(sock);
+}
+
 void PeerDiscovery::SendBroadcast(const std::string& json_str) {
     socket_t sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (!IS_VALID_SOCKET(sock)) return;
@@ -140,6 +157,40 @@ void PeerDiscovery::SendBroadcast(const std::string& json_str) {
     bcastAddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
     sendto(sock, json_str.c_str(), (int)json_str.length(), 0, (struct sockaddr*)&bcastAddr, sizeof(bcastAddr));
+
+#if !defined(_WIN32)
+    // 同时向所有活动网卡的定向子网广播地址 (如 192.168.x.255) 发送，彻底解决 iOS 与 macOS 路由表拦截受限广播 (255.255.255.255) 的问题
+    struct ifaddrs* ifap = nullptr;
+    if (getifaddrs(&ifap) == 0 && ifap) {
+        for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            if ((ifa->ifa_flags & IFF_UP) == 0 || (ifa->ifa_flags & IFF_LOOPBACK) != 0) continue;
+
+            struct sockaddr_in* sinAddr = (struct sockaddr_in*)ifa->ifa_addr;
+            uint32_t ipHost = ntohl(sinAddr->sin_addr.s_addr);
+            if (ipHost == 0 || (ipHost >> 24) == 127) continue;
+
+            uint32_t bcastNet = htonl(INADDR_BROADCAST);
+            if ((ifa->ifa_flags & IFF_BROADCAST) && ifa->ifa_broadaddr && ifa->ifa_broadaddr->sa_family == AF_INET) {
+                bcastNet = ((struct sockaddr_in*)ifa->ifa_broadaddr)->sin_addr.s_addr;
+            } else if (ifa->ifa_netmask && ifa->ifa_netmask->sa_family == AF_INET) {
+                uint32_t maskNet = ((struct sockaddr_in*)ifa->ifa_netmask)->sin_addr.s_addr;
+                bcastNet = (sinAddr->sin_addr.s_addr & maskNet) | (~maskNet);
+            }
+
+            if (bcastNet != htonl(INADDR_BROADCAST) && bcastNet != 0) {
+                struct sockaddr_in subBcast;
+                std::memset(&subBcast, 0, sizeof(subBcast));
+                subBcast.sin_family = AF_INET;
+                subBcast.sin_port = htons(DISCOVERY_UDP_PORT);
+                subBcast.sin_addr.s_addr = bcastNet;
+                sendto(sock, json_str.c_str(), (int)json_str.length(), 0, (struct sockaddr*)&subBcast, sizeof(subBcast));
+            }
+        }
+        freeifaddrs(ifap);
+    }
+#endif
+
     CLOSE_SOCKET(sock);
 }
 
@@ -311,9 +362,27 @@ void PeerDiscovery::HandlePacket(const std::string& msg, const std::string& remo
         if (changed && cb) {
             cb(currentList);
         }
+
+        // 收到手机广播后，同时单播回送一次电脑端信标，确保 iOS 在开启广播过滤的路由器下也能立即发现电脑
+        std::string osName = "macOS";
+#if defined(_WIN32)
+        osName = "Windows";
+#endif
+        std::string beacon = "{\"cmd\":\"desktop_beacon\",\"device_name\":\"" + desktop_name_ +
+                             "\",\"port\":" + std::to_string(DISCOVERY_UDP_PORT) +
+                             ",\"os\":\"" + osName + "\"}";
+        SendUnicastUdp(beacon, ip, DISCOVERY_UDP_PORT);
     } else if (cmd == "discover_desktop") {
-        // 手机主动探测电脑控制端，立即宣告自身
+        // 手机主动探测电脑控制端，立即广播并单播宣告自身
         BroadcastDesktopBeacon();
+        std::string osName = "macOS";
+#if defined(_WIN32)
+        osName = "Windows";
+#endif
+        std::string beacon = "{\"cmd\":\"desktop_beacon\",\"device_name\":\"" + desktop_name_ +
+                             "\",\"port\":" + std::to_string(DISCOVERY_UDP_PORT) +
+                             ",\"os\":\"" + osName + "\"}";
+        SendUnicastUdp(beacon, remote_ip, DISCOVERY_UDP_PORT);
     } else if (cmd == "connect_request") {
         // 手机在屏幕上直接点击了本电脑控制端，主动通知直连
         std::string phoneName = ExtractJsonField(msg, "phone_name");

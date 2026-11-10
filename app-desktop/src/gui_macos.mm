@@ -2183,13 +2183,7 @@ static void DecompressCallback(void* decompressionOutputRefCon,
 - (void)reloadDevicePopUp {
     [phonePopUp removeAllItems];
 
-    if (cachedWifiPhones.empty() && cachedUsbDevices.empty()) {
-        [phonePopUp addItemWithTitle:@"(未搜到手机，请确认手机已连接 Wi-Fi)"];
-        [[phonePopUp itemAtIndex:0] setRepresentedObject:nil];
-        return;
-    }
-
-    // 1. 添加局域网对等发现的 Wi-Fi 手机
+    // 1. 添加局域网对等发现的 Wi-Fi 手机 (iOS / Android)
     for (const auto& phone : cachedWifiPhones) {
         NSString* title = [NSString stringWithFormat:@"📱 %@ (%@)", SafeStr(phone.name), SafeStr(phone.ip)];
         [phonePopUp addItemWithTitle:title];
@@ -2213,6 +2207,11 @@ static void DecompressCallback(void* decompressionOutputRefCon,
         };
         [item setRepresentedObject:dict];
     }
+
+    // 3. 始终提供手动输入 IP 直连项（支持跨网段或开启 AP 广播隔离时的 iOS / Android 私有协议直连）
+    [phonePopUp addItemWithTitle:@"⌨️ 手动输入手机 IP 直连 (iOS / Android)..."];
+    NSMenuItem* manualItem = [phonePopUp lastItem];
+    [manualItem setRepresentedObject:@{ @"type": @"manual" }];
 }
 
 - (void)onConnectPhoneClicked:(id)sender {
@@ -2226,8 +2225,32 @@ static void DecompressCallback(void* decompressionOutputRefCon,
     if (!selected) return;
 
     NSDictionary* dict = [selected representedObject];
-    if (!dict) {
-        ctl.Log("[控制端] 请选择有效的手机设备进行连接！");
+    if (!dict || [dict[@"type"] isEqualToString:@"manual"]) {
+        NSAlert* alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"手动输入手机 IP 直连 (FastMirror 私有协议)"];
+        [alert setInformativeText:@"请输入 iPhone 或 Android 手机端 ACast 显示的局域网 IP 地址（默认端口 19999）："];
+        [alert addButtonWithTitle:@"立即直连"];
+        [alert addButtonWithTitle:@"取消"];
+
+        NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+        [input setPlaceholderString:@"例如: 192.168.2.3"];
+        [alert setAccessoryView:input];
+        [[alert window] setInitialFirstResponder:input];
+
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            NSString* raw = [[input stringValue] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if ([raw length] > 0) {
+                NSString* host = raw;
+                uint16_t port = 19999;
+                NSRange colon = [raw rangeOfString:@":"];
+                if (colon.location != NSNotFound) {
+                    host = [raw substringToIndex:colon.location];
+                    int p = [[raw substringFromIndex:colon.location + 1] intValue];
+                    if (p > 0 && p < 65536) port = (uint16_t)p;
+                }
+                ctl.ConnectWifiPhone([host UTF8String], port);
+            }
+        }
         return;
     }
 

@@ -117,7 +117,7 @@ jobs:
           rm -rf pt_darwin.zip platform-tools
 
           APP_VER="${GITHUB_REF_NAME#v}"
-          APP_VER="${APP_VER:-0.5.1}"
+          APP_VER="${APP_VER:-0.5.2}"
 
           cat << EOF > dist-macos/ACast.app/Contents/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
@@ -220,7 +220,9 @@ jobs:
       - name: 编译并打包 iOS 可签名 IPA (含 ReplayKit 扩展)
         run: |
           chmod +x scripts/build_ios_ipa.sh
-          ./scripts/build_ios_ipa.sh 0.4.4
+          APP_VER="${GITHUB_REF_NAME#v}"
+          APP_VER="${APP_VER:-0.5.2}"
+          ./scripts/build_ios_ipa.sh "${APP_VER}"
 
       - name: 同时生成源码与扩展归档包
         run: |

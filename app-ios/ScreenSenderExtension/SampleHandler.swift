@@ -1,39 +1,550 @@
 import ReplayKit
+import Foundation
+import VideoToolbox
+import CoreMedia
+import CoreVideo
+import Darwin
+
+// ============================================================================
+// FastMirror H.264 硬件编码与双通道推流器 (ReplayKit 扩展进程)
+// 1. 优先通过 127.0.0.1:19995 零配置环回桥接转发给主应用 ACast (免 App Group 签名依赖)
+// 2. 若主应用未在后台运行，自动接管直连监听 TCP 19999 与 UDP 19998 发现广播
+// ============================================================================
+
+final class ExtensionFastMirrorBridge {
+    static let shared = ExtensionFastMirrorBridge()
+
+    private let lock = NSLock()
+    private var compressionSession: VTCompressionSession?
+    private var currentWidth: Int32 = 0
+    private var currentHeight: Int32 = 0
+    private var frameCount: Int64 = 0
+
+    // 主应用环回连接 (127.0.0.1:19995)
+    private var loopbackFd: Int32 = -1
+    private var lastLoopbackAttempt: TimeInterval = 0
+
+    // 独立备用服务端 (当主应用未启动时自动接管 TCP 19999)
+    private var serverFd: Int32 = -1
+    private var clientFds: [Int32] = []
+    private var cachedKeyFramePacket: Data?
+    private var isRunning = false
+
+    func start() {
+        lock.lock()
+        if isRunning {
+            lock.unlock()
+            return
+        }
+        isRunning = true
+        lock.unlock()
+
+        _ = connectLoopbackIfNeeded()
+        startFallbackServerIfNeeded()
+        startExtensionDiscoveryBeacon()
+    }
+
+    func stop() {
+        lock.lock()
+        isRunning = false
+        if loopbackFd >= 0 {
+            Darwin.close(loopbackFd)
+            loopbackFd = -1
+        }
+        if serverFd >= 0 {
+            Darwin.close(serverFd)
+            serverFd = -1
+        }
+        for fd in clientFds {
+            Darwin.close(fd)
+        }
+        clientFds.removeAll()
+        if let session = compressionSession {
+            VTCompressionSessionInvalidate(session)
+            compressionSession = nil
+        }
+        lock.unlock()
+    }
+
+    func encodeVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        let rawW = CVPixelBufferGetWidth(imageBuffer)
+        let rawH = CVPixelBufferGetHeight(imageBuffer)
+        if rawW == 0 || rawH == 0 { return }
+
+        // 控制扩展内编码分辨率上限 (最高 1080p，16 字节对齐，确保 ReplayKit 50MB 内存安全)
+        let maxDim = 1920.0
+        let scale = min(1.0, maxDim / Double(max(rawW, rawH)))
+        let targetW = Int32((Int(Double(rawW) * scale) / 16) * 16)
+        let targetH = Int32((Int(Double(rawH) * scale) / 16) * 16)
+        if targetW <= 0 || targetH <= 0 { return }
+
+        lock.lock()
+        if compressionSession == nil || currentWidth != targetW || currentHeight != targetH {
+            setupCompressionSessionLocked(width: targetW, height: targetH)
+        }
+        guard let session = compressionSession else {
+            lock.unlock()
+            return
+        }
+        frameCount += 1
+        let forceKey = (frameCount % 30 == 1)
+        lock.unlock()
+
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        var props: CFDictionary? = nil
+        if forceKey {
+            let dict: [CFString: Any] = [kVTEncodeFrameOptionKey_ForceKeyFrame: true]
+            props = dict as CFDictionary
+        }
+
+        var flagsOut = VTEncodeInfoFlags()
+        VTCompressionSessionEncodeFrame(
+            session,
+            imageBuffer: imageBuffer,
+            presentationTimeStamp: pts,
+            duration: .invalid,
+            frameProperties: props,
+            sourceFrameRefcon: nil,
+            infoFlagsOut: &flagsOut
+        )
+    }
+
+    private func setupCompressionSessionLocked(width: Int32, height: Int32) {
+        if let old = compressionSession {
+            VTCompressionSessionInvalidate(old)
+            compressionSession = nil
+        }
+        currentWidth = width
+        currentHeight = height
+
+        let callback: VTCompressionOutputCallback = { (outputCallbackRefCon, _, status, _, sampleBuffer) in
+            guard status == noErr, let sbuf = sampleBuffer, let refCon = outputCallbackRefCon else { return }
+            let bridge = Unmanaged<ExtensionFastMirrorBridge>.fromOpaque(refCon).takeUnretainedValue()
+            bridge.handleEncodedSampleBuffer(sbuf)
+        }
+
+        var session: VTCompressionSession?
+        let status = VTCompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            width: width,
+            height: height,
+            codecType: kCMVideoCodecType_H264,
+            encoderSpecification: nil,
+            imageBufferAttributes: nil,
+            compressedDataAllocator: nil,
+            outputCallback: callback,
+            refcon: Unmanaged.passUnretained(self).toOpaque(),
+            compressionSessionOut: &session
+        )
+
+        guard status == noErr, let vtSession = session else { return }
+
+        VTSessionSetProperty(vtSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        VTSessionSetProperty(vtSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
+        VTSessionSetProperty(vtSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        VTSessionSetProperty(vtSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 30))
+        VTSessionSetProperty(vtSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0))
+        VTSessionSetProperty(vtSession, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: 4_500_000))
+        VTSessionSetProperty(vtSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 30))
+        VTCompressionSessionPrepareToEncodeFrames(vtSession)
+
+        compressionSession = vtSession
+    }
+
+    private func handleEncodedSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+
+        var isKeyFrame = true
+        let notSyncKey = "NotSync" as CFString
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[CFString: Any]],
+           let first = attachments.first,
+           let notSync = first[notSyncKey] as? Bool {
+            isKeyFrame = !notSync
+        }
+
+        var annexB = Data()
+        let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
+
+        if isKeyFrame, let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) {
+            var spsPtr: UnsafePointer<UInt8>?
+            var spsSize: Int = 0
+            var spsCount: Int = 0
+            if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, parameterSetIndex: 0, parameterSetPointerOut: &spsPtr, parameterSetSizeOut: &spsSize, parameterSetCountOut: &spsCount, nalUnitHeaderLengthOut: nil) == noErr,
+               let sps = spsPtr, spsSize > 0 {
+                annexB.append(contentsOf: startCode)
+                annexB.append(sps, count: spsSize)
+            }
+
+            var ppsPtr: UnsafePointer<UInt8>?
+            var ppsSize: Int = 0
+            if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, parameterSetIndex: 1, parameterSetPointerOut: &ppsPtr, parameterSetSizeOut: &ppsSize, parameterSetCountOut: &spsCount, nalUnitHeaderLengthOut: nil) == noErr,
+               let pps = ppsPtr, ppsSize > 0 {
+                annexB.append(contentsOf: startCode)
+                annexB.append(pps, count: ppsSize)
+            }
+        }
+
+        guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        var totalLen: Int = 0
+        var dataPtr: UnsafeMutablePointer<Int8>?
+        guard CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &totalLen, dataPointerOut: &dataPtr) == kCMBlockBufferNoErr,
+              let basePtr = dataPtr, totalLen > 4 else { return }
+
+        let rawBytes = UnsafeRawPointer(basePtr).assumingMemoryBound(to: UInt8.self)
+        var offset = 0
+        while offset + 4 <= totalLen {
+            let naluLen = (Int(rawBytes[offset]) << 24) |
+                          (Int(rawBytes[offset + 1]) << 16) |
+                          (Int(rawBytes[offset + 2]) << 8) |
+                          Int(rawBytes[offset + 3])
+            offset += 4
+            if naluLen > 0 && offset + naluLen <= totalLen {
+                annexB.append(contentsOf: startCode)
+                annexB.append(rawBytes.advanced(by: offset), count: naluLen)
+                offset += naluLen
+            } else {
+                break
+            }
+        }
+
+        if annexB.isEmpty { return }
+
+        let packet = Self.packFastMirrorPacket(msgType: 0x06, payload: annexB)
+        dispatchPacket(packet, isKeyFrame: isKeyFrame)
+    }
+
+    static func packFastMirrorPacket(msgType: UInt8, payload: Data) -> Data {
+        var header = [UInt8](repeating: 0, count: 16)
+        // MAGIC: 0x46 0x4D ("FM")
+        header[0] = 0x46
+        header[1] = 0x4D
+        header[2] = msgType
+        header[3] = 0x00
+
+        let len = UInt32(payload.count)
+        header[4] = UInt8((len >> 24) & 0xFF)
+        header[5] = UInt8((len >> 16) & 0xFF)
+        header[6] = UInt8((len >> 8) & 0xFF)
+        header[7] = UInt8(len & 0xFF)
+
+        let ptsUs = UInt64(Date().timeIntervalSince1970 * 1_000_000)
+        header[8]  = UInt8((ptsUs >> 56) & 0xFF)
+        header[9]  = UInt8((ptsUs >> 48) & 0xFF)
+        header[10] = UInt8((ptsUs >> 40) & 0xFF)
+        header[11] = UInt8((ptsUs >> 32) & 0xFF)
+        header[12] = UInt8((ptsUs >> 24) & 0xFF)
+        header[13] = UInt8((ptsUs >> 16) & 0xFF)
+        header[14] = UInt8((ptsUs >> 8) & 0xFF)
+        header[15] = UInt8(ptsUs & 0xFF)
+
+        var packet = Data(header)
+        packet.append(payload)
+        return packet
+    }
+
+    private func dispatchPacket(_ packet: Data, isKeyFrame: Bool) {
+        lock.lock()
+        if isKeyFrame {
+            cachedKeyFramePacket = packet
+        }
+        lock.unlock()
+
+        // 1. 优先推送至主应用环回桥 (127.0.0.1:19995)
+        if connectLoopbackIfNeeded() {
+            lock.lock()
+            let fd = loopbackFd
+            lock.unlock()
+            if fd >= 0 {
+                if !Self.sendAll(fd: fd, data: packet) {
+                    lock.lock()
+                    if loopbackFd == fd {
+                        Darwin.close(loopbackFd)
+                        loopbackFd = -1
+                    }
+                    lock.unlock()
+                }
+            }
+        }
+
+        // 2. 同时向直连本扩展的客户端广播 (若有)
+        lock.lock()
+        let clients = clientFds
+        lock.unlock()
+
+        for cfd in clients {
+            if !Self.sendAll(fd: cfd, data: packet) {
+                lock.lock()
+                clientFds.removeAll { $0 == cfd }
+                Darwin.close(cfd)
+                lock.unlock()
+            }
+        }
+    }
+
+    private func connectLoopbackIfNeeded() -> Bool {
+        lock.lock()
+        if loopbackFd >= 0 {
+            lock.unlock()
+            return true
+        }
+        let now = Date().timeIntervalSince1970
+        if now - lastLoopbackAttempt < 1.0 {
+            lock.unlock()
+            return false
+        }
+        lastLoopbackAttempt = now
+        lock.unlock()
+
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        if fd < 0 { return false }
+
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        var noDelay: Int32 = 1
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &noDelay, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(19995).bigEndian
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+        let res = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if res == 0 {
+            lock.lock()
+            loopbackFd = fd
+            let keyPkt = cachedKeyFramePacket
+            lock.unlock()
+            if let kp = keyPkt {
+                _ = Self.sendAll(fd: fd, data: kp)
+            }
+            return true
+        } else {
+            Darwin.close(fd)
+            return false
+        }
+    }
+
+    private func startFallbackServerIfNeeded() {
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            guard let self = self else { return }
+            while self.isRunning {
+                self.lock.lock()
+                let existing = self.serverFd
+                self.lock.unlock()
+
+                if existing < 0 {
+                    let sfd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+                    if sfd >= 0 {
+                        var yes: Int32 = 1
+                        setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+                        setsockopt(sfd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
+                        setsockopt(sfd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+                        var addr = sockaddr_in()
+                        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+                        addr.sin_family = sa_family_t(AF_INET)
+                        addr.sin_port = UInt16(19999).bigEndian
+                        addr.sin_addr.s_addr = INADDR_ANY.bigEndian
+
+                        let bindRes = withUnsafePointer(to: &addr) {
+                            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                                Darwin.bind(sfd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                            }
+                        }
+                        if bindRes == 0 && Darwin.listen(sfd, 5) == 0 {
+                            self.lock.lock()
+                            self.serverFd = sfd
+                            self.lock.unlock()
+
+                            while self.isRunning {
+                                var cAddr = sockaddr_in()
+                                var cLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                                let cfd = withUnsafeMutablePointer(to: &cAddr) {
+                                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                                        Darwin.accept(sfd, $0, &cLen)
+                                    }
+                                }
+                                if cfd < 0 { break }
+                                var one: Int32 = 1
+                                setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+                                setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
+
+                                self.lock.lock()
+                                self.clientFds.append(cfd)
+                                let keyPkt = self.cachedKeyFramePacket
+                                self.lock.unlock()
+
+                                if let kp = keyPkt {
+                                    _ = Self.sendAll(fd: cfd, data: kp)
+                                }
+                                self.drainClientSocketAsync(cfd)
+                            }
+                        } else {
+                            Darwin.close(sfd)
+                        }
+                    }
+                }
+                Thread.sleep(forTimeInterval: 2.0)
+            }
+        }
+    }
+
+    private func drainClientSocketAsync(_ cfd: Int32) {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var buf = [UInt8](repeating: 0, count: 512)
+            while let self = self, self.isRunning {
+                let n = Darwin.recv(cfd, &buf, buf.count, 0)
+                if n <= 0 { break }
+            }
+            self?.lock.lock()
+            self?.clientFds.removeAll { $0 == cfd }
+            Darwin.close(cfd)
+            self?.lock.unlock()
+        }
+    }
+
+    private func startExtensionDiscoveryBeacon() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            while let self = self, self.isRunning {
+                let (ip, bcast) = Self.getLocalWiFiAddressAndBroadcast()
+                if !ip.isEmpty {
+                    let beacon = "{\"cmd\":\"phone_beacon\",\"device_name\":\"iPhone (ACast 屏幕广播)\",\"ip\":\"\(ip)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
+                    Self.sendUdpBroadcast(message: beacon, broadcastIp: bcast, port: 19998)
+                }
+                Thread.sleep(forTimeInterval: 2.0)
+            }
+        }
+    }
+
+    static func sendAll(fd: Int32, data: Data) -> Bool {
+        return data.withUnsafeBytes { rawBuf -> Bool in
+            guard let base = rawBuf.baseAddress else { return false }
+            var totalSent = 0
+            let count = data.count
+            while totalSent < count {
+                let n = Darwin.send(fd, base.advanced(by: totalSent), count - totalSent, 0)
+                if n <= 0 {
+                    if n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                        usleep(1000)
+                        continue
+                    }
+                    return false
+                }
+                totalSent += n
+            }
+            return true
+        }
+    }
+
+    static func getLocalWiFiAddressAndBroadcast() -> (String, String) {
+        var address = ""
+        var broadcast = "255.255.255.255"
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else {
+            return (address, broadcast)
+        }
+        defer { freeifaddrs(ifaddr) }
+
+        var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while let current = ptr {
+            let flags = Int32(current.pointee.ifa_flags)
+            let addr = current.pointee.ifa_addr
+            if (flags & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING),
+               (flags & IFF_LOOPBACK) == 0,
+               let sa = addr, sa.pointee.sa_family == UInt8(AF_INET) {
+                let name = String(cString: current.pointee.ifa_name)
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    let ipStr = String(cString: hostname)
+                    if !ipStr.hasPrefix("169.254.") && !ipStr.hasPrefix("127.") {
+                        var bcastStr = "255.255.255.255"
+                        if let netmask = current.pointee.ifa_netmask {
+                            let ipIn = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
+                            let maskIn = netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
+                            var bcastAddr = in_addr(s_addr: (ipIn & maskIn) | (~maskIn))
+                            var bcastBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                            if inet_ntop(AF_INET, &bcastAddr, &bcastBuf, socklen_t(INET_ADDRSTRLEN)) != nil {
+                                bcastStr = String(cString: bcastBuf)
+                            }
+                        }
+                        if name == "en0" || name == "bridge100" {
+                            return (ipStr, bcastStr)
+                        } else if address.isEmpty {
+                            address = ipStr
+                            broadcast = bcastStr
+                        }
+                    }
+                }
+            }
+            ptr = current.pointee.ifa_next
+        }
+        return (address, broadcast)
+    }
+
+    static func sendUdpBroadcast(message: String, broadcastIp: String, port: UInt16) {
+        let sock = Darwin.socket(AF_INET, SOCK_DGRAM, 0)
+        if sock < 0 { return }
+        defer { Darwin.close(sock) }
+
+        var yes: Int32 = 1
+        setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+        guard let data = message.data(using: .utf8) else { return }
+        let targets = Set([broadcastIp, "255.255.255.255"])
+        for target in targets {
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            if inet_pton(AF_INET, target, &addr.sin_addr) > 0 {
+                data.withUnsafeBytes { rawBuf in
+                    guard let base = rawBuf.baseAddress else { return }
+                    withUnsafePointer(to: &addr) {
+                        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                            _ = Darwin.sendto(sock, base, data.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 class SampleHandler: RPBroadcastSampleHandler {
 
     override func broadcastStarted(withSetupInfo setupInfo: [String : NSObject]?) {
-        // 用户在控制中心启动屏幕广播
-        NSLog("[ACast] 屏幕与音频广播推流已启动")
+        NSLog("[ACast] iOS 屏幕广播推流已启动 (FastMirror 私有协议)")
+        ExtensionFastMirrorBridge.shared.start()
     }
 
     override func broadcastPaused() {
-        // 投屏暂停
+        NSLog("[ACast] iOS 屏幕广播已暂停")
     }
 
     override func broadcastResumed() {
-        // 投屏恢复
+        NSLog("[ACast] iOS 屏幕广播已恢复")
     }
 
     override func broadcastFinished() {
-        // 投屏结束
-        NSLog("[ACast] 屏幕广播推流已结束")
+        NSLog("[ACast] iOS 屏幕广播已结束")
+        ExtensionFastMirrorBridge.shared.stop()
     }
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
         switch sampleBufferType {
         case .video:
-            // 处理视频帧 (经 VideoToolbox 硬件编码为 H.264 推流)
-            break
-        case .audioApp:
-            // 处理系统内部播放声音样本
-            break
-        case .audioMic:
-            // 处理麦克风声音
+            ExtensionFastMirrorBridge.shared.encodeVideoSampleBuffer(sampleBuffer)
+        case .audioApp, .audioMic:
             break
         @unknown default:
             break
         }
     }
 }
-
