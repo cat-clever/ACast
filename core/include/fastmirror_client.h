@@ -59,7 +59,7 @@ private:
     std::atomic<bool> is_connected_{false};
     std::string connected_ip_;
     uint16_t connected_port_{0};
-    int socket_fd_{-1};
+    std::atomic<int> socket_fd_{-1};
     std::vector<int> active_sockets_;
     std::mutex send_mutex_;
 
@@ -72,7 +72,7 @@ private:
     VideoFrameCallback camera_cb_;
     ReverseConnectCallback reverse_cb_;
 
-    std::mutex conn_mutex_;
+    mutable std::mutex conn_mutex_;
     std::string pending_connect_ip_;
     std::atomic<uint64_t> connect_epoch_{0};
     std::atomic<bool> reverse_running_{false};

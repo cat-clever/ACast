@@ -80,6 +80,7 @@ void FastMirrorClient::StartReverseServer(uint16_t listen_port, ReverseConnectCa
         std::lock_guard<std::mutex> lock(cb_mutex_);
         reverse_cb_ = std::move(cb);
     }
+    std::lock_guard<std::mutex> lock(conn_mutex_);
     if (reverse_running_) return;
     reverse_running_ = true;
     reverse_server_thread_ = std::thread(&FastMirrorClient::ReverseServerLoop, this, listen_port);
@@ -87,13 +88,24 @@ void FastMirrorClient::StartReverseServer(uint16_t listen_port, ReverseConnectCa
 
 void FastMirrorClient::StopReverseServer() {
     reverse_running_ = false;
-    if (reverse_server_fd_ >= 0) {
-        SHUTDOWN_SOCKET(reverse_server_fd_);
-        CLOSE_SOCKET(reverse_server_fd_);
-        reverse_server_fd_ = -1;
+    std::thread old_rev;
+    {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        if (reverse_server_fd_ >= 0) {
+            SHUTDOWN_SOCKET(reverse_server_fd_);
+            CLOSE_SOCKET(reverse_server_fd_);
+            reverse_server_fd_ = -1;
+        }
+        old_rev = std::move(reverse_server_thread_);
     }
-    if (reverse_server_thread_.joinable()) {
-        reverse_server_thread_.join();
+    if (old_rev.joinable()) {
+        if (old_rev.get_id() == std::this_thread::get_id()) {
+            old_rev.detach();
+        } else {
+            try {
+                old_rev.join();
+            } catch (...) {}
+        }
     }
 }
 
@@ -180,6 +192,8 @@ void FastMirrorClient::AdoptSocket(int sock, const std::string& ip, uint16_t por
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_send, sizeof(tv_send));
 #endif
 
+    std::thread old_hb;
+    bool need_start_hb = false;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
         pending_connect_ip_.clear();
@@ -188,12 +202,28 @@ void FastMirrorClient::AdoptSocket(int sock, const std::string& ip, uint16_t por
         connected_ip_ = ip;
         connected_port_ = port;
         bool was_connected = is_connected_.exchange(true);
-        stop_heartbeat_ = false;
 
-        if (!was_connected) {
-            if (heartbeat_thread_.joinable()) {
-                heartbeat_thread_.join();
-            }
+        if (!was_connected || !heartbeat_thread_.joinable()) {
+            stop_heartbeat_ = true;
+            old_hb = std::move(heartbeat_thread_);
+            need_start_hb = true;
+        }
+    }
+
+    if (old_hb.joinable()) {
+        if (old_hb.get_id() == std::this_thread::get_id()) {
+            old_hb.detach();
+        } else {
+            try {
+                old_hb.join();
+            } catch (...) {}
+        }
+    }
+
+    if (need_start_hb) {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        if (is_connected_ && !heartbeat_thread_.joinable()) {
+            stop_heartbeat_ = false;
             heartbeat_thread_ = std::thread(&FastMirrorClient::HeartbeatLoop, this);
         }
     }
@@ -432,25 +462,33 @@ bool FastMirrorClient::Connect(const std::string& ip, uint16_t port, int timeout
 }
 
 void FastMirrorClient::Disconnect() {
-    std::vector<int> to_close;
+    std::vector<int> to_shutdown;
+    std::thread old_hb;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
         pending_connect_ip_.clear();
         is_connected_ = false;
         stop_heartbeat_ = true;
         socket_fd_ = -1;
-        to_close.swap(active_sockets_);
+        to_shutdown.swap(active_sockets_);
         connected_ip_.clear();
         connected_port_ = 0;
+        old_hb = std::move(heartbeat_thread_);
     }
-    for (int s : to_close) {
+    for (int s : to_shutdown) {
         if (s >= 0) {
+            // 仅执行 shutdown 唤醒阻塞中的 recv()，由 ReceiveSocketLoop 安全退出后关闭 fd，防止并发 fd 复用冲突
             SHUTDOWN_SOCKET(s);
-            CLOSE_SOCKET(s);
         }
     }
-    if (heartbeat_thread_.joinable()) {
-        heartbeat_thread_.join();
+    if (old_hb.joinable()) {
+        if (old_hb.get_id() == std::this_thread::get_id()) {
+            old_hb.detach();
+        } else {
+            try {
+                old_hb.join();
+            } catch (...) {}
+        }
     }
 }
 
@@ -459,10 +497,12 @@ bool FastMirrorClient::IsConnected() const {
 }
 
 std::string FastMirrorClient::GetConnectedIp() const {
+    std::lock_guard<std::mutex> lock(conn_mutex_);
     return connected_ip_;
 }
 
 uint16_t FastMirrorClient::GetConnectedPort() const {
+    std::lock_guard<std::mutex> lock(conn_mutex_);
     return connected_port_;
 }
 
@@ -564,8 +604,8 @@ bool FastMirrorClient::SendPing() {
 
 void FastMirrorClient::HeartbeatLoop() {
     while (is_connected_ && !stop_heartbeat_) {
-        for (int i = 0; i < 100; ++i) { // 10秒定时器
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        for (int i = 0; i < 500; ++i) { // 10秒定时器 (20ms 步进，确保 Disconnect 瞬間退出无卡顿)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
             if (!is_connected_ || stop_heartbeat_) return;
         }
         if (!is_connected_ || stop_heartbeat_) break;
@@ -716,17 +756,21 @@ void FastMirrorClient::ReceiveSocketLoop(int sock) {
     }
 
     // 清理当前断开的 socket，若仍存在其他活跃 socket（如主应用与广播扩展并存），则无缝保持连接状态
-    std::lock_guard<std::mutex> lock(conn_mutex_);
-    auto it = std::find(active_sockets_.begin(), active_sockets_.end(), sock);
-    if (it != active_sockets_.end()) {
-        active_sockets_.erase(it);
-        CLOSE_SOCKET(sock);
+    {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        auto it = std::find(active_sockets_.begin(), active_sockets_.end(), sock);
+        if (it != active_sockets_.end()) {
+            active_sockets_.erase(it);
+        }
+        if (active_sockets_.empty()) {
+            socket_fd_ = -1;
+            is_connected_ = false;
+        } else if (socket_fd_ == sock) {
+            socket_fd_ = active_sockets_.back();
+        }
     }
-    if (active_sockets_.empty()) {
-        socket_fd_ = -1;
-        is_connected_ = false;
-    } else if (socket_fd_ == sock) {
-        socket_fd_ = active_sockets_.back();
+    if (sock >= 0) {
+        CLOSE_SOCKET(sock);
     }
 }
 
