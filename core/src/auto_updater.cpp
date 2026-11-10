@@ -361,6 +361,7 @@ bool AutoUpdater::ApplyMacOsUpdate(const std::string& dmg_path, const std::funct
     script << "# 卸载挂载卷并去除隔离属性\n";
     script << "hdiutil detach \"" << mount_dir << "\" -force >/dev/null\n";
     script << "xattr -dr com.apple.quarantine \"" << target_app << "\" >/dev/null\n";
+    script << "codesign --force --deep --sign - \"" << target_app << "\" >/dev/null\n";
     script << "rm -rf \"" << cache_dir << "\"\n";
     script << "# 重启全新版本\n";
     script << "open -n \"" << target_app << "\"\n";

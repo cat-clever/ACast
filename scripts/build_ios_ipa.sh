@@ -15,7 +15,7 @@ SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
 echo "[1/6] 成功加载 iOS SDK: ${SDK_PATH}"
 
 TARGET="arm64-apple-ios16.0"
-VERSION="${1:-0.5.2}"
+VERSION="${1:-0.5.3}"
 
 # 2. 清理并初始化 Payload 目录结构
 echo "[2/6] 创建标准 iOS 应用 Bundle 结构..."
@@ -37,6 +37,7 @@ xcrun -sdk iphoneos swiftc \
   -framework CoreMedia \
   -framework CoreVideo \
   -framework CoreGraphics \
+  -framework Network \
   -o Payload/ACast.app/ACast \
   app-ios/ScreenSender/AppDelegate.swift
 
@@ -113,6 +114,11 @@ cat << EOF > Payload/ACast.app/Info.plist
     </array>
     <key>NSLocalNetworkUsageDescription</key>
     <string>ACast 需要访问本地局域网，用于自动发现电脑控制端并通过 FastMirror 私有协议进行极低延迟无线投屏与相机推流。</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_acast._tcp</string>
+        <string>_acast._udp</string>
+    </array>
     <key>NSCameraUsageDescription</key>
     <string>ACast 需要访问摄像头，用于将 iPhone 高清摄像头画面实时无线推流至电脑与虚拟摄像头。</string>
     <key>NSMicrophoneUsageDescription</key>

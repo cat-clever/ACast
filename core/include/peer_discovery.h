@@ -44,6 +44,9 @@ public:
     // 全网主动广播搜寻手机
     void SearchPhones();
 
+    // 请求目标手机主动反向直连本电脑的 TCP 端口 (解决 iOS 局域网入站拦截与后台挂起问题)
+    void RequestReverseConnect(const std::string& phone_ip, uint16_t desktop_tcp_port = 19990);
+
     // 注册已发现手机列表更新回调
     void SetPhoneListCallback(PhoneListCallback cb);
 

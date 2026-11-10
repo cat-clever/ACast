@@ -128,10 +128,42 @@ void PeerDiscovery::SearchPhones() {
     SendBroadcast(searchMsg);
 }
 
+static void BindSocketToMatchingInterface(socket_t sock, const std::string& target_ip) {
+#if defined(__APPLE__)
+    if (target_ip.empty()) return;
+    struct in_addr targetAddr;
+    if (inet_pton(AF_INET, target_ip.c_str(), &targetAddr) <= 0) return;
+
+    struct ifaddrs* ifap = nullptr;
+    if (getifaddrs(&ifap) == 0 && ifap) {
+        for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET || !ifa->ifa_netmask) continue;
+            if ((ifa->ifa_flags & IFF_UP) == 0 || (ifa->ifa_flags & IFF_LOOPBACK) != 0) continue;
+
+            uint32_t ifIp = ((struct sockaddr_in*)ifa->ifa_addr)->sin_addr.s_addr;
+            uint32_t ifMask = ((struct sockaddr_in*)ifa->ifa_netmask)->sin_addr.s_addr;
+            if (ifIp != 0 && ifMask != 0 && ((targetAddr.s_addr & ifMask) == (ifIp & ifMask))) {
+                unsigned int ifIdx = if_nametoindex(ifa->ifa_name);
+                if (ifIdx > 0) {
+                    setsockopt(sock, IPPROTO_IP, IP_BOUND_IF, &ifIdx, sizeof(ifIdx));
+                }
+                break;
+            }
+        }
+        freeifaddrs(ifap);
+    }
+#else
+    (void)sock;
+    (void)target_ip;
+#endif
+}
+
 static void SendUnicastUdp(const std::string& json_str, const std::string& target_ip, uint16_t port) {
     if (target_ip.empty()) return;
     socket_t sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (!IS_VALID_SOCKET(sock)) return;
+
+    BindSocketToMatchingInterface(sock, target_ip);
 
     struct sockaddr_in destAddr;
     std::memset(&destAddr, 0, sizeof(destAddr));
@@ -141,6 +173,20 @@ static void SendUnicastUdp(const std::string& json_str, const std::string& targe
         sendto(sock, json_str.c_str(), (int)json_str.length(), 0, (struct sockaddr*)&destAddr, sizeof(destAddr));
     }
     CLOSE_SOCKET(sock);
+}
+
+void PeerDiscovery::RequestReverseConnect(const std::string& phone_ip, uint16_t desktop_tcp_port) {
+    std::string osName = "macOS";
+#if defined(_WIN32)
+    osName = "Windows";
+#endif
+    std::string msg = "{\"cmd\":\"request_reverse_connect\",\"device_name\":\"" + desktop_name_ +
+                      "\",\"tcp_port\":" + std::to_string(desktop_tcp_port) +
+                      ",\"os\":\"" + osName + "\"}";
+    if (!phone_ip.empty()) {
+        SendUnicastUdp(msg, phone_ip, DISCOVERY_UDP_PORT);
+    }
+    SendBroadcast(msg);
 }
 
 void PeerDiscovery::SendBroadcast(const std::string& json_str) {
@@ -159,7 +205,7 @@ void PeerDiscovery::SendBroadcast(const std::string& json_str) {
     sendto(sock, json_str.c_str(), (int)json_str.length(), 0, (struct sockaddr*)&bcastAddr, sizeof(bcastAddr));
 
 #if !defined(_WIN32)
-    // 同时向所有活动网卡的定向子网广播地址 (如 192.168.x.255) 发送，彻底解决 iOS 与 macOS 路由表拦截受限广播 (255.255.255.255) 的问题
+    // 同时绑定每个物理/热点网卡 (如 bridge100 / en0) 并发送定向子网广播，彻底绕过 macOS utun VPN 全局路由劫持
     struct ifaddrs* ifap = nullptr;
     if (getifaddrs(&ifap) == 0 && ifap) {
         for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
@@ -179,12 +225,23 @@ void PeerDiscovery::SendBroadcast(const std::string& json_str) {
             }
 
             if (bcastNet != htonl(INADDR_BROADCAST) && bcastNet != 0) {
-                struct sockaddr_in subBcast;
-                std::memset(&subBcast, 0, sizeof(subBcast));
-                subBcast.sin_family = AF_INET;
-                subBcast.sin_port = htons(DISCOVERY_UDP_PORT);
-                subBcast.sin_addr.s_addr = bcastNet;
-                sendto(sock, json_str.c_str(), (int)json_str.length(), 0, (struct sockaddr*)&subBcast, sizeof(subBcast));
+                socket_t ifSock = socket(AF_INET, SOCK_DGRAM, 0);
+                if (IS_VALID_SOCKET(ifSock)) {
+                    setsockopt(ifSock, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcast, sizeof(broadcast));
+#if defined(__APPLE__)
+                    unsigned int ifIdx = if_nametoindex(ifa->ifa_name);
+                    if (ifIdx > 0) {
+                        setsockopt(ifSock, IPPROTO_IP, IP_BOUND_IF, &ifIdx, sizeof(ifIdx));
+                    }
+#endif
+                    struct sockaddr_in subBcast;
+                    std::memset(&subBcast, 0, sizeof(subBcast));
+                    subBcast.sin_family = AF_INET;
+                    subBcast.sin_port = htons(DISCOVERY_UDP_PORT);
+                    subBcast.sin_addr.s_addr = bcastNet;
+                    sendto(ifSock, json_str.c_str(), (int)json_str.length(), 0, (struct sockaddr*)&subBcast, sizeof(subBcast));
+                    CLOSE_SOCKET(ifSock);
+                }
             }
         }
         freeifaddrs(ifap);
@@ -201,6 +258,7 @@ void PeerDiscovery::BroadcastDesktopBeacon() {
 #endif
     std::string beacon = "{\"cmd\":\"desktop_beacon\",\"device_name\":\"" + desktop_name_ +
                          "\",\"port\":" + std::to_string(DISCOVERY_UDP_PORT) +
+                         ",\"tcp_port\":19990" +
                          ",\"os\":\"" + osName + "\"}";
     SendBroadcast(beacon);
 }
@@ -370,6 +428,7 @@ void PeerDiscovery::HandlePacket(const std::string& msg, const std::string& remo
 #endif
         std::string beacon = "{\"cmd\":\"desktop_beacon\",\"device_name\":\"" + desktop_name_ +
                              "\",\"port\":" + std::to_string(DISCOVERY_UDP_PORT) +
+                             ",\"tcp_port\":19990" +
                              ",\"os\":\"" + osName + "\"}";
         SendUnicastUdp(beacon, ip, DISCOVERY_UDP_PORT);
     } else if (cmd == "discover_desktop") {
@@ -381,6 +440,7 @@ void PeerDiscovery::HandlePacket(const std::string& msg, const std::string& remo
 #endif
         std::string beacon = "{\"cmd\":\"desktop_beacon\",\"device_name\":\"" + desktop_name_ +
                              "\",\"port\":" + std::to_string(DISCOVERY_UDP_PORT) +
+                             ",\"tcp_port\":19990" +
                              ",\"os\":\"" + osName + "\"}";
         SendUnicastUdp(beacon, remote_ip, DISCOVERY_UDP_PORT);
     } else if (cmd == "connect_request") {

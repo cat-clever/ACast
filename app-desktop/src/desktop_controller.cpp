@@ -53,6 +53,22 @@ void DesktopController::Init() {
         ConnectWifiPhone(req.phone_ip, req.phone_port);
     });
 
+    // 启动桌面端 FastMirror 反向直连 TCP 监听端口 (19990)
+    // 支持 iOS 主应用及 ReplayKit 屏幕广播扩展主动出站直连本机，彻底解决 iOS 入站端口挂起/防火墙拦截超时问题
+    if (fastmirror_client_) {
+        fastmirror_client_->StartReverseServer(19990, [this](const std::string& remote_ip, uint16_t remote_port) {
+            Log("[局域网直连] 🎉 收到手机端主动反向直连 (" + remote_ip + ":" + std::to_string(remote_port) + ")！高速通道已就绪。");
+            FastMirrorCallback cb_to_call;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cb_to_call = fm_cb_;
+            }
+            if (cb_to_call) {
+                cb_to_call(true, remote_ip + ":" + std::to_string(remote_port));
+            }
+        });
+    }
+
     RefreshUsbDevices();
     CheckUpdateAsync();
 }
@@ -63,6 +79,7 @@ void DesktopController::Cleanup() {
         dlna_controller_->StopDiscovery();
     }
     if (fastmirror_client_) {
+        fastmirror_client_->StopReverseServer();
         fastmirror_client_->Disconnect();
     }
 }
@@ -231,6 +248,9 @@ void DesktopController::ConnectWifiPhone(const std::string& ip, uint16_t port) {
         return;
     }
     Log("[局域网直连] 正在建立 FastMirror 私有协议高速直连: " + ip + ":" + std::to_string(port) + " ...");
+
+    // 同步向目标手机发送 UDP 反向直连唤醒信令 (19998 -> 手机主动出站连接本机 19990)
+    acast::discovery::PeerDiscovery::GetInstance().RequestReverseConnect(ip, 19990);
 
     std::thread([this, ip, port]() {
         bool ok = false;

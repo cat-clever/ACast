@@ -24,9 +24,14 @@ final class ExtensionFastMirrorBridge {
     private var loopbackFd: Int32 = -1
     private var lastLoopbackAttempt: TimeInterval = 0
 
-    // 独立备用服务端 (当主应用未启动时自动接管 TCP 19999)
+    // 独立备用服务端与主动出站直连池
     private var serverFd: Int32 = -1
+    private var udpListenFd: Int32 = -1
     private var clientFds: [Int32] = []
+    private var clientFdIps: [Int32: String] = [:]
+    private var connectedDesktopIps: Set<String> = []
+    private var connectingDesktopIps: Set<String> = []
+    private var discoveredDesktopIps: Set<String> = []
     private var cachedKeyFramePacket: Data?
     private var isRunning = false
 
@@ -41,6 +46,7 @@ final class ExtensionFastMirrorBridge {
 
         _ = connectLoopbackIfNeeded()
         startFallbackServerIfNeeded()
+        startExtensionUdpListener()
         startExtensionDiscoveryBeacon()
     }
 
@@ -55,10 +61,17 @@ final class ExtensionFastMirrorBridge {
             Darwin.close(serverFd)
             serverFd = -1
         }
+        if udpListenFd >= 0 {
+            Darwin.close(udpListenFd)
+            udpListenFd = -1
+        }
         for fd in clientFds {
             Darwin.close(fd)
         }
         clientFds.removeAll()
+        clientFdIps.removeAll()
+        connectedDesktopIps.removeAll()
+        connectingDesktopIps.removeAll()
         if let session = compressionSession {
             VTCompressionSessionInvalidate(session)
             compressionSession = nil
@@ -249,9 +262,26 @@ final class ExtensionFastMirrorBridge {
         if isKeyFrame {
             cachedKeyFramePacket = packet
         }
+        let clients = clientFds
         lock.unlock()
 
-        // 1. 优先推送至主应用环回桥 (127.0.0.1:19995)
+        // 1. 优先向已建立直连的电脑客户端广播 (含主动出站直连电脑 19990 端口)
+        if !clients.isEmpty {
+            for cfd in clients {
+                if !Self.sendAll(fd: cfd, data: packet) {
+                    lock.lock()
+                    clientFds.removeAll { $0 == cfd }
+                    if let ip = clientFdIps.removeValue(forKey: cfd) {
+                        connectedDesktopIps.remove(ip)
+                    }
+                    Darwin.close(cfd)
+                    lock.unlock()
+                }
+            }
+            return
+        }
+
+        // 2. 若当前尚无直接电脑连接，推送至主应用环回桥 (127.0.0.1:19995)
         if connectLoopbackIfNeeded() {
             lock.lock()
             let fd = loopbackFd
@@ -265,20 +295,6 @@ final class ExtensionFastMirrorBridge {
                     }
                     lock.unlock()
                 }
-            }
-        }
-
-        // 2. 同时向直连本扩展的客户端广播 (若有)
-        lock.lock()
-        let clients = clientFds
-        lock.unlock()
-
-        for cfd in clients {
-            if !Self.sendAll(fd: cfd, data: packet) {
-                lock.lock()
-                clientFds.removeAll { $0 == cfd }
-                Darwin.close(cfd)
-                lock.unlock()
             }
         }
     }
@@ -403,10 +419,178 @@ final class ExtensionFastMirrorBridge {
                 let n = Darwin.recv(cfd, &buf, buf.count, 0)
                 if n <= 0 { break }
             }
-            self?.lock.lock()
-            self?.clientFds.removeAll { $0 == cfd }
+            guard let self = self else { return }
+            self.lock.lock()
+            self.clientFds.removeAll { $0 == cfd }
+            if let ip = self.clientFdIps.removeValue(forKey: cfd) {
+                self.connectedDesktopIps.remove(ip)
+            }
             Darwin.close(cfd)
-            self?.lock.unlock()
+            self.lock.unlock()
+        }
+    }
+
+    func connectToDesktop(ip: String, port: UInt16 = 19990) {
+        let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "127.0.0.1" { return }
+
+        lock.lock()
+        if connectedDesktopIps.contains(trimmed) || connectingDesktopIps.contains(trimmed) {
+            lock.unlock()
+            return
+        }
+        connectingDesktopIps.insert(trimmed)
+        lock.unlock()
+
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            guard let self = self else { return }
+            defer {
+                self.lock.lock()
+                self.connectingDesktopIps.remove(trimmed)
+                self.lock.unlock()
+            }
+
+            let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+            if fd < 0 { return }
+
+            var one: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
+
+            let flags = fcntl(fd, F_GETFL, 0)
+            if flags >= 0 {
+                _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+            }
+
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            if inet_pton(AF_INET, trimmed, &addr.sin_addr) <= 0 {
+                Darwin.close(fd)
+                return
+            }
+
+            let rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+
+            var ok = (rc == 0)
+            if !ok && (errno == EINPROGRESS || errno == EWOULDBLOCK) {
+                var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                let pr = Darwin.poll(&pfd, 1, 1500)
+                if pr > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
+                    var soErr: Int32 = 0
+                    var errLen = socklen_t(MemoryLayout<Int32>.size)
+                    if getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &errLen) == 0 && soErr == 0 {
+                        ok = true
+                    }
+                }
+            }
+
+            if !ok {
+                Darwin.close(fd)
+                return
+            }
+
+            if flags >= 0 {
+                _ = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
+            }
+
+            self.lock.lock()
+            if self.connectedDesktopIps.contains(trimmed) {
+                self.lock.unlock()
+                Darwin.close(fd)
+                return
+            }
+            self.connectedDesktopIps.insert(trimmed)
+            self.clientFds.append(fd)
+            self.clientFdIps[fd] = trimmed
+            let keyPkt = self.cachedKeyFramePacket
+            self.lock.unlock()
+
+            if let kp = keyPkt {
+                _ = Self.sendAll(fd: fd, data: kp)
+            }
+            self.drainClientSocketAsync(fd)
+        }
+    }
+
+    private func startExtensionUdpListener() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            while self.isRunning {
+                let fd = Darwin.socket(AF_INET, SOCK_DGRAM, 0)
+                if fd < 0 {
+                    Thread.sleep(forTimeInterval: 1.0)
+                    continue
+                }
+                var yes: Int32 = 1
+                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+                setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
+                setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+                var addr = sockaddr_in()
+                addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = UInt16(19998).bigEndian
+                addr.sin_addr.s_addr = INADDR_ANY.bigEndian
+
+                let bindRes = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+                if bindRes != 0 {
+                    Darwin.close(fd)
+                    Thread.sleep(forTimeInterval: 1.0)
+                    continue
+                }
+
+                self.lock.lock()
+                self.udpListenFd = fd
+                self.lock.unlock()
+
+                var buf = [UInt8](repeating: 0, count: 2048)
+                while self.isRunning {
+                    var rAddr = sockaddr_in()
+                    var rLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                    let n = withUnsafeMutablePointer(to: &rAddr) {
+                        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                            Darwin.recvfrom(fd, &buf, buf.count - 1, 0, sa, &rLen)
+                        }
+                    }
+                    if n <= 0 { break }
+                    let data = Data(bytes: buf, count: n)
+                    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let cmd = json["cmd"] as? String else { continue }
+
+                    var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                    var sinAddr = rAddr.sin_addr
+                    var remoteIp = ""
+                    if inet_ntop(AF_INET, &sinAddr, &ipBuf, socklen_t(INET_ADDRSTRLEN)) != nil {
+                        remoteIp = String(cString: ipBuf)
+                    }
+
+                    let (myIp, _) = Self.getLocalWiFiAddressAndBroadcast()
+                    if !remoteIp.isEmpty && remoteIp == myIp { continue }
+
+                    if cmd == "desktop_beacon" || cmd == "request_reverse_connect" || cmd == "discover_phone" {
+                        var targetIp = (json["ip"] as? String) ?? (json["desktop_ip"] as? String) ?? remoteIp
+                        if targetIp.isEmpty || targetIp == "127.0.0.1" { targetIp = remoteIp }
+                        let tcpPort = UInt16((json["tcp_port"] as? Int) ?? 19990)
+                        if !targetIp.isEmpty {
+                            self.lock.lock()
+                            self.discoveredDesktopIps.insert(targetIp)
+                            self.lock.unlock()
+                            self.connectToDesktop(ip: targetIp, port: tcpPort)
+                        }
+                    }
+                }
+                Darwin.close(fd)
+            }
         }
     }
 
@@ -417,6 +601,19 @@ final class ExtensionFastMirrorBridge {
                 if !ip.isEmpty {
                     let beacon = "{\"cmd\":\"phone_beacon\",\"device_name\":\"iPhone (ACast 屏幕广播)\",\"ip\":\"\(ip)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
                     Self.sendUdpBroadcast(message: beacon, broadcastIp: bcast, port: 19998)
+
+                    // 自动主动直连子网 .1 网关 (如 Mac 共享热点 192.168.2.1:19990)
+                    let parts = ip.split(separator: ".")
+                    if parts.count == 4 && parts[3] != "1" {
+                        let gw = "\(parts[0]).\(parts[1]).\(parts[2]).1"
+                        self.connectToDesktop(ip: gw, port: 19990)
+                    }
+                }
+                self.lock.lock()
+                let peers = Array(self.discoveredDesktopIps)
+                self.lock.unlock()
+                for peerIp in peers {
+                    self.connectToDesktop(ip: peerIp, port: 19990)
                 }
                 Thread.sleep(forTimeInterval: 2.0)
             }

@@ -6,7 +6,39 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 import CoreGraphics
+import Network
 import Darwin
+
+// ============================================================================
+// 0. iOS 14-18 本地网络隐私权限激活器 (Network.framework NECP 策略注册)
+// ============================================================================
+
+final class LocalNetworkPermissionTrigger {
+    static let shared = LocalNetworkPermissionTrigger()
+    private var browser: NWBrowser?
+    private var listener: NWListener?
+
+    func trigger() {
+        let params = NWParameters.tcp
+        params.includePeerToPeer = true
+
+        let b = NWBrowser(for: .bonjour(type: "_acast._tcp", domain: nil), using: params)
+        b.stateUpdateHandler = { _ in }
+        b.browseResultsChangedHandler = { _, _ in }
+        b.start(queue: DispatchQueue.global(qos: .utility))
+        self.browser = b
+
+        if let l = try? NWListener(using: params) {
+            l.service = NWListener.Service(name: UIDevice.current.name, type: "_acast._tcp")
+            l.newConnectionHandler = { conn in
+                conn.cancel()
+            }
+            l.stateUpdateHandler = { _ in }
+            l.start(queue: DispatchQueue.global(qos: .utility))
+            self.listener = l
+        }
+    }
+}
 
 // ============================================================================
 // 1. 局域网网络工具与 IPv4 / 子网广播地址探测
@@ -95,6 +127,12 @@ enum IOSNetUtils {
             totalRead += n
         }
         return true
+    }
+
+    static func guessGatewayIp(from ip: String) -> String {
+        let parts = ip.split(separator: ".")
+        guard parts.count == 4, parts[3] != "1" else { return "" }
+        return "\(parts[0]).\(parts[1]).\(parts[2]).1"
     }
 }
 
@@ -354,6 +392,9 @@ final class FastMirrorServer {
     private var serverFd: Int32 = -1
     private var loopbackServerFd: Int32 = -1
     private var clientFds: [Int32] = []
+    private var clientFdIps: [Int32: String] = [:]
+    private var connectedDesktopIps: Set<String> = []
+    private var connectingDesktopIps: Set<String> = []
     private var isRunning = false
     private var cachedVideoKeyFramePacket: Data?
     private var cachedCameraKeyFramePacket: Data?
@@ -386,6 +427,122 @@ final class FastMirrorServer {
 
         startTcpAcceptorThread()
         startLoopbackBridgeThread()
+        startAutoReverseConnectThread()
+    }
+
+    func connectToDesktop(ip: String, port: UInt16 = 19990) {
+        let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "127.0.0.1" { return }
+
+        lock.lock()
+        if connectedDesktopIps.contains(trimmed) || connectingDesktopIps.contains(trimmed) {
+            lock.unlock()
+            return
+        }
+        connectingDesktopIps.insert(trimmed)
+        lock.unlock()
+
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            guard let self = self else { return }
+            defer {
+                self.lock.lock()
+                self.connectingDesktopIps.remove(trimmed)
+                self.lock.unlock()
+            }
+
+            let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+            if fd < 0 { return }
+
+            var one: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
+
+            let flags = fcntl(fd, F_GETFL, 0)
+            if flags >= 0 {
+                _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+            }
+
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            if inet_pton(AF_INET, trimmed, &addr.sin_addr) <= 0 {
+                Darwin.close(fd)
+                return
+            }
+
+            let rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+
+            var ok = (rc == 0)
+            if !ok && (errno == EINPROGRESS || errno == EWOULDBLOCK) {
+                var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                let pr = Darwin.poll(&pfd, 1, 1500)
+                if pr > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
+                    var soErr: Int32 = 0
+                    var errLen = socklen_t(MemoryLayout<Int32>.size)
+                    if getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &errLen) == 0 && soErr == 0 {
+                        ok = true
+                    }
+                }
+            }
+
+            if !ok {
+                Darwin.close(fd)
+                return
+            }
+
+            if flags >= 0 {
+                _ = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
+            }
+
+            self.lock.lock()
+            if self.connectedDesktopIps.contains(trimmed) {
+                self.lock.unlock()
+                Darwin.close(fd)
+                return
+            }
+            self.connectedDesktopIps.insert(trimmed)
+            self.clientFds.append(fd)
+            self.clientFdIps[fd] = trimmed
+            let vKey = self.cachedVideoKeyFramePacket
+            let cKey = self.cachedCameraKeyFramePacket
+            self.lock.unlock()
+
+            if let vk = vKey {
+                _ = IOSNetUtils.sendAll(fd: fd, data: vk)
+            }
+            if let ck = cKey {
+                _ = IOSNetUtils.sendAll(fd: fd, data: ck)
+            }
+
+            self.onRequestKeyFrame?()
+            self.notifyClientCount()
+            self.handleDesktopControlClient(fd)
+        }
+    }
+
+    private func startAutoReverseConnectThread() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            while self.isRunning {
+                let info = IOSNetUtils.currentWiFiInfo()
+                if !info.ip.isEmpty {
+                    let gw = IOSNetUtils.guessGatewayIp(from: info.ip)
+                    if !gw.isEmpty {
+                        self.connectToDesktop(ip: gw, port: 19990)
+                    }
+                }
+                let peers = IOSPeerDiscovery.shared.discoveredIps()
+                for peerIp in peers {
+                    self.connectToDesktop(ip: peerIp, port: 19990)
+                }
+                Thread.sleep(forTimeInterval: 2.0)
+            }
+        }
     }
 
     func clientCount() -> Int {
@@ -441,6 +598,9 @@ final class FastMirrorServer {
             if !IOSNetUtils.sendAll(fd: fd, data: packet) {
                 lock.lock()
                 clientFds.removeAll { $0 == fd }
+                if let ip = clientFdIps.removeValue(forKey: fd) {
+                    connectedDesktopIps.remove(ip)
+                }
                 Darwin.close(fd)
                 removed = true
                 lock.unlock()
@@ -538,6 +698,9 @@ final class FastMirrorServer {
             guard let self = self else { return }
             self.lock.lock()
             self.clientFds.removeAll { $0 == cfd }
+            if let ip = self.clientFdIps.removeValue(forKey: cfd) {
+                self.connectedDesktopIps.remove(ip)
+            }
             Darwin.close(cfd)
             self.lock.unlock()
             self.notifyClientCount()
@@ -765,9 +928,18 @@ final class IOSPeerDiscovery {
         }
     }
 
+    func discoveredIps() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return desktops.map { $0.ip }
+    }
+
     func sendConnectRequest(to desktopIp: String) {
         let trimmed = desktopIp.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return }
+
+        // 0. 立即从手机主动向外直连电脑 19990 反向直连端口 (绕过一切 iOS 入站拦截)
+        FastMirrorServer.shared.connectToDesktop(ip: trimmed, port: 19990)
 
         DispatchQueue.global(qos: .userInteractive).async {
             let info = IOSNetUtils.currentWiFiInfo()
@@ -882,17 +1054,26 @@ final class IOSPeerDiscovery {
             let snapshot = desktops
             lock.unlock()
 
-            // 收到电脑信标时，立即单播回送一次手机信标，确保双向秒级互认
+            // 收到电脑信标时，立即单播回送一次手机信标，并主动反向直连电脑 19990 端口
             if !info.ip.isEmpty {
                 let name = deviceDisplayName()
                 let reply = "{\"cmd\":\"phone_beacon\",\"device_name\":\"\(name)\",\"ip\":\"\(info.ip)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
                 sendUdpUnicast(reply, targetIp: ip, port: discoveryPort)
             }
+            let tcpPort = UInt16((json["tcp_port"] as? Int) ?? 19990)
+            FastMirrorServer.shared.connectToDesktop(ip: ip, port: tcpPort)
 
             if changed {
                 DispatchQueue.main.async { [weak self] in
                     self?.onDesktopsChanged?(snapshot)
                 }
+            }
+        } else if cmd == "request_reverse_connect" {
+            var ip = (json["desktop_ip"] as? String) ?? remoteIp
+            if ip.isEmpty || ip == "127.0.0.1" { ip = remoteIp }
+            let tcpPort = UInt16((json["tcp_port"] as? Int) ?? 19990)
+            if !ip.isEmpty {
+                FastMirrorServer.shared.connectToDesktop(ip: ip, port: tcpPort)
             }
         } else if cmd == "discover_phone" {
             broadcastPhoneBeacon(info: info)
@@ -900,6 +1081,7 @@ final class IOSPeerDiscovery {
                 let name = deviceDisplayName()
                 let reply = "{\"cmd\":\"phone_beacon\",\"device_name\":\"\(name)\",\"ip\":\"\(info.ip)\",\"port\":19999,\"model\":\"iPhone\",\"status\":\"capturing\"}"
                 sendUdpUnicast(reply, targetIp: remoteIp, port: discoveryPort)
+                FastMirrorServer.shared.connectToDesktop(ip: remoteIp, port: 19990)
             }
         }
     }
@@ -1136,6 +1318,7 @@ final class MainViewController: UIViewController {
         setupUI()
         bindServices()
 
+        LocalNetworkPermissionTrigger.shared.trigger()
         BackgroundAudioKeepAlive.shared.start()
         FastMirrorServer.shared.start()
         IOSPeerDiscovery.shared.start()

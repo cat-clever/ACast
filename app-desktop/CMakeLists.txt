@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(acast_desktop VERSION 0.5.2 LANGUAGES CXX)
+project(acast_desktop VERSION 0.5.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -79,6 +79,7 @@ if(APPLE)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_BINARY_DIR}/camera-extension/com.clevercat.acast.camera-extension.systemextension
             $<TARGET_FILE_DIR:acast_desktop>/../Library/SystemExtensions/com.clevercat.acast.camera-extension.systemextension
+        COMMAND codesign --force --deep --sign - $<TARGET_BUNDLE_DIR:acast_desktop>
         COMMENT "打包嵌入 macOS 虚拟摄像头系统扩展 (Camera Extension)..."
     )
 endif()
